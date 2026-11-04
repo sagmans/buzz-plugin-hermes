@@ -1,0 +1,8 @@
+# Tools for this repository. Run them through mise (`mise exec -- …`), so
+# every machine builds and checks with the same releases. The build tools
+# themselves (Vite, TypeScript) come from the pinned buzz-app clone
+# (README, "Build"); this repository installs no packages of its own.
+[tools]
+node = "24.22.1"
+markdownlint-cli2 = "0.23.2"
+shfmt = "3.14.1"

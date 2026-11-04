@@ -1,0 +1,10 @@
+# Build output: the installable plugin is built from src/ and a local buzz-app
+# clone (README, "Build"), so it never ships in the source.
+/dist/
+# Link to the local buzz-app clone (scripts/link-toolchain).
+/buzz-app
+/node_modules/
+# Local clutter.
+.DS_Store
+*.log
+/.scratch/
