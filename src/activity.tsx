@@ -5,7 +5,7 @@
 // One difference: the app opens a transcript in its own panel tab through a
 // React context that a plugin cannot reach, so here it replaces the tab's content
 // and has a back button, as the app's subview does in a panel without tabs.
-// (The same module as buzz-plugin-hermes's src/activity.tsx.)
+// (The same module as buzz-plugin-opencode's src/activity.tsx.)
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import activityStyles from "@app/features/agents/ActivityLayout.module.css";
 import { ActivityTranscript } from "@app/features/agents/ActivityTranscript";

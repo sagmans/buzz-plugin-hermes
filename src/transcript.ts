@@ -2,7 +2,7 @@
 // model, so the app's own ActivityTranscript shows it as it shows a Goose
 // session. A replay carries no times and no turn ends: its turns have no dates
 // and their status stays unknown, except for the one still working.
-// (The same module as buzz-plugin-hermes's src/transcript.ts.)
+// (The same module as buzz-plugin-opencode's src/transcript.ts.)
 import {
   promptMessage,
   promptSections,

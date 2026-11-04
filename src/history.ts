@@ -7,7 +7,7 @@
 // ACP source there, not those its gateway runs, and either list also names
 // sessions the owner ran in the same workspace. The log names exactly the
 // sessions Buzz opened for an agent, so a session it did not open is never read.
-// (The same module as buzz-plugin-hermes's src/history.ts.)
+// (The same module as buzz-plugin-opencode's src/history.ts.)
 import type { AcpProcess } from "@app/features/agent-harness/acp/process";
 import type { Spawn } from "@app/features/agent-harness/acp/types";
 import type { TranscriptTurn } from "@app/features/agents/activity-transcript";
