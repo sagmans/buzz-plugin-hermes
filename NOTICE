@@ -19,7 +19,13 @@ These files repeat or adapt buzz-app code; each marks it in a comment:
   src/bundled/goose/index.ts.
 - src/views.tsx: the New agent and Settings views of
   src/bundled/goose/tabs.tsx, built from the same buzz-app components.
+- src/activity.tsx, src/history.ts and src/transcript.ts: the Activity tab follows
+  src/bundled/goose/tabs.tsx and src/bundled/goose/transcript.ts.
 - tsconfig.json: the compiler options of buzz-app's tsconfig.json.
+
+The build also bundles react-markdown and remark-gfm, with the unified, micromark
+and mdast libraries they use, for the transcripts. Each is licensed under the
+MIT License (@ungap/structured-clone: ISC).
 
 Hermes Agent is a project of Nous Research. This plugin is not affiliated
 with or endorsed by Nous Research or Block, Inc.

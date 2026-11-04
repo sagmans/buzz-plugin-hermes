@@ -28,6 +28,10 @@ flowchart TB
   offers. "Default" keeps the model of your Hermes config.
 - These views use the app's own model picker, instructions field and
   settings rows, so they look as they do for the app's own agents.
+- The Activity tab shows the agent's recent sessions and their transcripts.
+  It reads a session with `hermes acp` in a short-lived process, with the
+  workspace that the session ran in. Hermes stores the folder that a read
+  gives it.
 
 ## Requirements
 
@@ -88,8 +92,15 @@ A changed setting opens a new session at the next idle turn.
   asks the host for a shared MCP session, so each client that has the token
   can connect (`src/index.ts`, `sharedMcpHost`). The token stays on loopback,
   and it is valid only for one session. Hermes keeps it only in memory.
-- No Activity tab and no synced settings: these are app modules, not plugin
-  API.
+- The Activity tab lists only sessions that ran after this version was
+  installed: the plugin logs them, in this app's local storage. Hermes's ACP
+  replay has no times and no turn ends, so a transcript shows no dates, and
+  its turns show "Status unknown". A conversation shows as a short id, because
+  the plugin API does not give channel names to this tab.
+- An open transcript replaces the Activity tab's content, with a back button.
+  The app's own agents open it in a panel tab. The plugin API does not give
+  that part of the app to plugins.
+- No synced settings: this is an app module, not plugin API.
 - The Settings tab does not warn about unsaved changes when you leave it.
   The plugin API does not give that part of the app to plugins.
 
