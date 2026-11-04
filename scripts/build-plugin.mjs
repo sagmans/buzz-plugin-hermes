@@ -50,6 +50,13 @@ const EXIT_CONFIG = 78;
 
 /** buzz-app module (relative to its src/, no extension) to this repository's
  * module that replaces it. */
+/** The markdown parser's dependency whose browser build calls `document` when
+ * it loads. Its plain build decodes the same names from a table. The plugin
+ * module must load without a DOM: the smoke run loads it in Node. */
+const DOM_AT_LOAD = "decode-named-character-reference";
+const DOM_BUILD = /index\.dom\.js$/;
+const PLAIN_BUILD = "index.js";
+
 const SWAPS = {
   "bundled/goose/goose": "src/hermes.ts",
   "bundled/goose/sessions": "src/sessions.ts",
@@ -212,6 +219,24 @@ function swapPlugin(app) {
   };
 }
 
+/** Resolves DOM_AT_LOAD to its plain build. */
+function plainBuildAtLoad() {
+  return {
+    name: "plain-build-at-load",
+    enforce: "pre",
+    async resolveId(source, importer, options) {
+      if (source !== DOM_AT_LOAD) return null;
+      const found = await this.resolve(source, importer, {
+        ...options,
+        skipSelf: true,
+      });
+      return (
+        found && { ...found, id: found.id.replace(DOM_BUILD, PLAIN_BUILD) }
+      );
+    },
+  };
+}
+
 /** Resolves the React packages before the swaps see them: `react` to Buzz's
  * React (REACT_HOST), the safe parts into the bundle from the clone's
  * packages, any other part left as an import, which the bundle check then
@@ -247,7 +272,7 @@ async function bundle(app, out) {
     root: ROOT,
     logLevel: "warn",
     resolve: { alias: { "@app": join(app, "src") } },
-    plugins: [reactPlugin(app), swapPlugin(app)],
+    plugins: [plainBuildAtLoad(), reactPlugin(app), swapPlugin(app)],
     // buzz-app modules read Vite build inputs; an installed plugin has none.
     // React's packages pick their production build by NODE_ENV.
     define: {
