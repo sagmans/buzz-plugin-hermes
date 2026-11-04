@@ -17,6 +17,8 @@ These files repeat or adapt buzz-app code; each marks it in a comment:
 - src/sessions.ts: wraps src/bundled/goose/sessions.ts.
 - src/index.ts: the agent type and sessions list of
   src/bundled/goose/index.ts.
+- src/views.tsx: the New agent and Settings views of
+  src/bundled/goose/tabs.tsx, built from the same buzz-app components.
 - tsconfig.json: the compiler options of buzz-app's tsconfig.json.
 
 Hermes Agent is a project of Nous Research. This plugin is not affiliated

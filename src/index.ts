@@ -12,7 +12,9 @@ import {
   DEFAULT_CONFIG,
   GooseRuntime,
 } from "@app/bundled/goose/runtime";
+import { HermesLogoIcon } from "@app/shared/design-system/icons";
 import { LABEL } from "./hermes";
+import { bindReact } from "./react-host";
 import { HermesSetup } from "./setup";
 import { createViews } from "./views";
 
@@ -34,6 +36,8 @@ export const inject = ["react", "agents", "host"];
 
 export function apply(ctx: Context) {
   const { agents, host, react } = ctx;
+  // First: the bundled app components render with Buzz's React only.
+  bindReact(react);
   // Only the desktop app can start `hermes acp`, serve MCP to it and read the
   // files its tools attach; no unusable type elsewhere.
   if (!host.spawn || !host.resolveDirectory || !host.readFile || !host.serveMcp)
@@ -67,7 +71,7 @@ export function apply(ctx: Context) {
     runtime.dispose();
   });
 
-  agents.register<Config>(hermesType(runtime, createViews(react, setup)));
+  agents.register<Config>(hermesType(runtime, createViews(setup)));
 }
 
 /** The host the runtime serves Buzz tools through, with every MCP server in
@@ -98,6 +102,8 @@ function hermesType(
   return {
     id: TYPE_ID,
     title: LABEL,
+    // The app's own Hermes mark, as its type menus and cards show it.
+    icon: HermesLogoIcon,
     description:
       "Hermes Agent on this computer, with the provider and model Hermes is set up with. Each thread it is mentioned in is one continuing conversation.",
     defaults: () => ({ config: DEFAULT_CONFIG }),

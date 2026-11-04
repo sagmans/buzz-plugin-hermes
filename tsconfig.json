@@ -23,6 +23,7 @@
     "paths": {
       "@app/*": ["./buzz-app/src/*"],
       "react": ["./buzz-app/node_modules/@types/react"],
+      "react-bundled": ["./buzz-app/node_modules/@types/react/index.d.ts"],
       "@deepseek-ai/cordis": ["./buzz-app/node_modules/@deepseek-ai/cordis"]
     }
   },

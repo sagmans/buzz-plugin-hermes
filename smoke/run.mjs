@@ -9,6 +9,8 @@
 // through Buzz tools. Type checks and a bundle cannot prove that path; this
 // run proves the model picker reads Hermes' models, a turn starts a Hermes ACP
 // session on the chosen model, and Hermes answers through the Buzz `send` tool.
+// The model picker is the app's own, bundled: it renders with real React in
+// a jsdom window, both from the buzz-app clone the plugin is built from.
 //
 // It writes nothing outside a temporary workspace and touches no relay: the
 // agent handle publishes to memory only. Hermes itself runs with the user's
@@ -23,6 +25,7 @@ import { spawn } from "node:child_process";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
+import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -41,6 +44,26 @@ const LOOPBACK = "127.0.0.1";
 const MCP_SESSION_HEADER = "mcp-session-id";
 /** An ACP request's method in the plugin's JSON-RPC output. */
 const METHOD_RE = /"method":"([^"]+)"/g;
+/** The buzz-app clone link (scripts/link-toolchain): React, its renderer and
+ * jsdom come from there, the versions the plugin is built and run with. */
+const APP_LINK = join(ROOT, "buzz-app");
+/** How often the run looks at the rendered model picker. */
+const DOM_POLL_MS = 100;
+/** The window members the app's components read as globals. */
+const DOM_GLOBALS = [
+  "window",
+  "document",
+  "navigator",
+  "HTMLElement",
+  "Element",
+  "Node",
+  "Text",
+  "getComputedStyle",
+  "requestAnimationFrame",
+  "cancelAnimationFrame",
+  "MutationObserver",
+  "matchMedia",
+];
 const AGENT_NAME = "HermesSmoke";
 const EXIT_FAIL = 1;
 const EXIT_USAGE = 64;
@@ -103,7 +126,7 @@ function deadline(promise, ms, what) {
 
 /** The desktop host's process grant, as the app enforces it: only the
  * manifest's processes, only with the arguments it declares. */
-function processHost(manifest, children, methods) {
+function processHost(manifest, children, methods, stdout) {
   const declared = new Map(
     manifest.host.processes.map((entry) => [entry.id, entry]),
   );
@@ -134,7 +157,11 @@ function processHost(manifest, children, methods) {
     children.add(child);
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (data) => options.onStdout?.(data));
+    child.stdout.on("data", (data) => {
+      // Hermes' answers, to read its model list as the picker got it.
+      stdout.push(data);
+      options.onStdout?.(data);
+    });
     child.stderr.on("data", (data) => options.onStderr?.(data));
     const exited = new Promise((done) => {
       child.on("exit", (code) => {
@@ -299,36 +326,57 @@ function memoryStorage() {
   };
 }
 
-/** Just enough React to run the plugin's function components once: hooks
- * run at once and state updates are recorded, so the views' real model read
- * can be awaited. */
-function recordingReact() {
-  const states = [];
-  let ids = 0;
-  const react = {
-    createElement: (type, props, ...children) =>
-      typeof type === "function"
-        ? type({ ...props, children })
-        : { type, props, children },
-    useId: () => {
-      ids += 1;
-      return `smoke-${ids}`;
-    },
-    useEffect: (effect) => void effect(),
-    useState: (initial) => {
-      const slot = {
-        value: typeof initial === "function" ? initial() : initial,
-      };
-      states.push(slot);
-      return [
-        slot.value,
-        (next) => {
-          slot.value = typeof next === "function" ? next(slot.value) : next;
-        },
-      ];
-    },
+/** The React, renderer and window the views run with: real React and
+ * react-dom from the buzz-app clone (the version Buzz runs, which the plugin
+ * checks), and a jsdom window in place of the app's. */
+function appRuntime() {
+  const require = createRequire(join(APP_LINK, "package.json"));
+  const { JSDOM } = require("jsdom");
+  const { window } = new JSDOM('<!doctype html><div id="root"></div>', {
+    pretendToBeVisual: true,
+  });
+  // jsdom has no media queries; the app's motion reads one for reduced motion.
+  window.matchMedia ??= () => ({
+    matches: false,
+    addEventListener() {},
+    removeEventListener() {},
+    addListener() {},
+    removeListener() {},
+  });
+  for (const name of DOM_GLOBALS)
+    Object.defineProperty(globalThis, name, {
+      value: name === "window" ? window : window[name],
+      configurable: true,
+      writable: true,
+    });
+  return {
+    react: require("react"),
+    client: require("react-dom/client"),
+    root: window.document.getElementById("root"),
   };
-  return { react, states };
+}
+
+/** The model state of Hermes' `session/new` answers in its output, or
+ * undefined before one came. */
+function sessionModels(stdout) {
+  for (const line of stdout.join("").split("\n")) {
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const state = message?.result?.models;
+    if (!Array.isArray(state?.availableModels)) continue;
+    return {
+      models: state.availableModels.map(({ modelId, name }) => ({
+        id: modelId,
+        label: name ?? modelId,
+      })),
+      ...(state.currentModelId ? { current: state.currentModelId } : {}),
+    };
+  }
+  return undefined;
 }
 
 /** An agent handle that records what it would publish. Buzz tools that need
@@ -358,24 +406,43 @@ function recordingHandle(published) {
 }
 
 /** Waits for the model picker's read to finish. */
-async function discoverModels(type, states) {
-  type.CreateModel({ config: {}, onChange: () => {}, disabled: false });
-  const read = states.find(
-    (slot) =>
-      slot.value && typeof slot.value === "object" && "loading" in slot.value,
+/** What the picker shows for the default choice: the name of the model
+ * Hermes' config picks, or the plain default. */
+const currentLabel = ({ models, current }) =>
+  current
+    ? (models.find((model) => model.id === current)?.label ?? current)
+    : "Hermes default";
+
+async function discoverModels(type, app, stdout) {
+  const root = app.client.createRoot(app.root);
+  root.render(
+    app.react.createElement(type.CreateModel, {
+      config: {},
+      onChange: () => {},
+      disabled: false,
+    }),
   );
-  if (!read) throw new SmokeError("the model picker has no model state");
-  const started = Date.now();
-  while (read.value.loading) {
-    if (Date.now() - started > DISCOVERY_TIMEOUT_MS)
-      throw new SmokeError(
-        `model discovery took longer than ${DISCOVERY_TIMEOUT_MS} ms`,
-      );
-    await new Promise((done) => setTimeout(done, 100));
+  try {
+    const started = Date.now();
+    for (;;) {
+      const alert = app.root.querySelector('[role="alert"]');
+      if (alert)
+        throw new SmokeError(`model discovery failed: ${alert.textContent}`);
+      // Done when the picker shows the model Hermes' config picks, so the
+      // view has the list, not only the process.
+      const discovery = sessionModels(stdout);
+      const shown = app.root.querySelector("button")?.textContent ?? "";
+      if (discovery && shown.includes(currentLabel(discovery)))
+        return { discovery, shown };
+      if (Date.now() - started > DISCOVERY_TIMEOUT_MS)
+        throw new SmokeError(
+          `model discovery took longer than ${DISCOVERY_TIMEOUT_MS} ms; the picker shows "${shown}"`,
+        );
+      await new Promise((done) => setTimeout(done, DOM_POLL_MS));
+    }
+  } finally {
+    root.unmount();
   }
-  if (read.value.error)
-    throw new SmokeError(`model discovery failed: ${read.value.error}`);
-  return read.value.discovery;
 }
 
 /** One standalone turn that must answer through the Buzz `send` tool. */
@@ -436,7 +503,8 @@ async function main() {
   });
   const published = [];
   const types = [];
-  const { react, states } = recordingReact();
+  const app = appRuntime();
+  const stdout = [];
   const agent = {
     key: undefined,
     type: `${manifest.id}/${plugin.TYPE_ID}`,
@@ -447,10 +515,10 @@ async function main() {
   agent.key = handle.key;
   const ctx = {
     pluginOwner: { id: manifest.id },
-    react,
+    react: app.react,
     effect: (setup) => cleanups.push(setup()),
     host: {
-      spawn: processHost(manifest, children, methods),
+      spawn: processHost(manifest, children, methods, stdout),
       serveMcp: mcpHost(servers),
       resolveDirectory: async (path) => {
         const dir = expand(path);
@@ -483,12 +551,12 @@ async function main() {
         `expected one ${plugin.TYPE_ID} type, got ${types.length}`,
       );
     log("registered", `${agent.type} "${type.title}"`);
-    const discovery = await discoverModels(type, states);
+    const { discovery, shown } = await discoverModels(type, app, stdout);
     if (!discovery.models.length)
       throw new SmokeError("Hermes listed no models");
     log(
       "models",
-      `${discovery.models.length} listed, current ${discovery.current ?? "(none)"}`,
+      `${discovery.models.length} listed, current ${discovery.current ?? "(none)"}, picker shows "${shown}"`,
     );
     if (!options.turn) return;
     if (

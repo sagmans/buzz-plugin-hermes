@@ -39,6 +39,9 @@ const CLONE_LINK = join(ROOT, "buzz-app");
 const MANIFEST = join(ROOT, "plugin", "manifest.json");
 const ENTRY = join(ROOT, "src", "index.ts");
 const OUT_NAME = "plugin.js";
+/** The CSS asset Vite makes from bundled CSS modules. It is never written:
+ * Buzz loads no plugin CSS and already has these styles (FORBIDDEN). */
+const DROPPED_CSS_NAME = "dropped-styles";
 const EXPECTED_PACKAGE = "buzz-foundation";
 const GIT_TIMEOUT_MS = 30_000;
 const TSC_TIMEOUT_MS = 5 * 60_000;
@@ -52,16 +55,31 @@ const SWAPS = {
   "bundled/goose/sessions": "src/sessions.ts",
   "features/agents/service": "src/service-shim.ts",
 };
-/** Modules that must never be bundled (see the header). */
+/** Modules that must never be bundled (see the header). React itself is
+ * bundled only behind src/react-host.ts (reactPlugin), and a React renderer
+ * never is. CSS modules are bundled for their class names only: the bundle
+ * drops their styles, which Buzz's own stylesheet of the same buzz-app
+ * revision already has under the same content-hash names. */
 const FORBIDDEN = [
-  /node_modules\/react\//,
-  /node_modules\/react-dom\//,
+  /node_modules\/react-dom\/(?:client|server|profiling|static)/,
+  /node_modules\/react-dom\/cjs\/react-dom-(?:client|server|profiling|static)/,
   /node_modules\/@tauri-apps\//,
   /\/src\/features\/agents\/service\.ts$/,
   /\/src\/features\/agents\/store-native/,
   /\/src\/features\/identity\//,
-  /\.css$/,
 ];
+/** Buzz's React, bound at `apply(ctx)`: every `react` import resolves to it,
+ * so bundled buzz-app components render with the React that renders them. */
+const REACT_HOST = join(ROOT, "src", "react-host.ts");
+/** The one import of the bundled React package: src/react-host.ts only. */
+const REACT_BUNDLED = "react-bundled";
+/** Parts of React packages that are safe to bundle: the JSX runtime only
+ * builds element objects, and `react-dom` (not its renderers) supplies
+ * `createPortal` and `flushSync`. A renderer stays an import, and the
+ * bundle check fails. */
+const REACT_BUNDLE = /^(?:react\/jsx(?:-dev)?-runtime|react-dom)$/;
+/** Any other part of the React packages, such as a renderer. */
+const REACT_OTHER = /^react(?:-dom)?\//;
 
 /** A build precondition or step that failed, with what to do about it. */
 class BuildError extends Error {
@@ -194,6 +212,31 @@ function swapPlugin(app) {
   };
 }
 
+/** Resolves the React packages before the swaps see them: `react` to Buzz's
+ * React (REACT_HOST), the safe parts into the bundle from the clone's
+ * packages, any other part left as an import, which the bundle check then
+ * rejects. */
+function reactPlugin(app) {
+  // Any module of the clone resolves its packages as buzz-app does.
+  const from = join(app, "src", "main.tsx");
+  return {
+    name: "hermes-react-from-host",
+    enforce: "pre",
+    resolveId(source, importer, options) {
+      if (source === "react") return REACT_HOST;
+      if (source === REACT_BUNDLED) {
+        if (importer !== REACT_HOST)
+          this.error(`${REACT_BUNDLED} is for src/react-host.ts only`);
+        return this.resolve("react", from, { ...options, skipSelf: true });
+      }
+      if (REACT_BUNDLE.test(source))
+        return this.resolve(source, from, { ...options, skipSelf: true });
+      if (REACT_OTHER.test(source)) return { id: source, external: true };
+      return null;
+    },
+  };
+}
+
 async function bundle(app, out) {
   const { build } = await import(
     pathToFileURL(join(app, "node_modules", "vite", "dist", "node", "index.js"))
@@ -204,14 +247,23 @@ async function bundle(app, out) {
     root: ROOT,
     logLevel: "warn",
     resolve: { alias: { "@app": join(app, "src") } },
-    plugins: [swapPlugin(app)],
+    plugins: [reactPlugin(app), swapPlugin(app)],
     // buzz-app modules read Vite build inputs; an installed plugin has none.
-    define: { "import.meta.env.VITE_BUZZ_DATABRICKS_HOST": "undefined" },
+    // React's packages pick their production build by NODE_ENV.
+    define: {
+      "import.meta.env.VITE_BUZZ_DATABRICKS_HOST": "undefined",
+      "process.env.NODE_ENV": JSON.stringify("production"),
+    },
     build: {
       write: false,
       target: "es2022",
       minify: false,
-      lib: { entry: ENTRY, formats: ["es"], fileName: () => OUT_NAME },
+      lib: {
+        entry: ENTRY,
+        formats: ["es"],
+        fileName: () => OUT_NAME,
+        cssFileName: DROPPED_CSS_NAME,
+      },
       rollupOptions: { output: { codeSplitting: false } },
     },
   });
