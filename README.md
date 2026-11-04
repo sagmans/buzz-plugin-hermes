@@ -80,6 +80,11 @@ A changed setting opens a new session at the next idle turn.
   but it accepts HTTP MCP servers. The plugin adds the missing flag to that
   one answer (`src/hermes.ts`, `hermesSpawn`). The smoke run proves that
   Hermes reaches the Buzz tools.
+- The Hermes gateway connects to the Buzz tools again for each turn. The
+  app's host normally lets one MCP client use a session's token. The plugin
+  asks the host for a shared MCP session, so each client that has the token
+  can connect (`src/index.ts`, `sharedMcpHost`). The token stays on loopback,
+  and it is valid only for one session. Hermes keeps it only in memory.
 - No Activity tab and no synced settings: these are app modules, not plugin
   API.
 

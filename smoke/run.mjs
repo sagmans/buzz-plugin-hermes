@@ -37,6 +37,8 @@ const KILL_GRACE_MS = 3_000;
 /** The largest MCP request body accepted, as a loopback server should cap it. */
 const MCP_BODY_LIMIT = 1024 * 1024;
 const LOOPBACK = "127.0.0.1";
+/** The header the app's host names an MCP session with (src-tauri host_mcp). */
+const MCP_SESSION_HEADER = "mcp-session-id";
 /** An ACP request's method in the plugin's JSON-RPC output. */
 const METHOD_RE = /"method":"([^"]+)"/g;
 const AGENT_NAME = "HermesSmoke";
@@ -176,9 +178,11 @@ async function stop(child, exited) {
 
 /** A loopback MCP server (Streamable HTTP, JSON answers) that hands each
  * message to the plugin, as the app's host does. Requests without the
- * server's token are refused. */
+ * server's token are refused. Like the host, a token admits one MCP session:
+ * a second `initialize` stops the server unless the plugin asked for a shared
+ * session, so a harness that reconnects fails here as it fails in the app. */
 function mcpHost(servers) {
-  return (handler) =>
+  return (handler, options) =>
     new Promise((ready, fail) => {
       const token = hex(32);
       const expected = Buffer.from(`Bearer ${token}`);
@@ -186,6 +190,8 @@ function mcpHost(servers) {
       const closed = new Promise((done) => {
         resolveClosed = done;
       });
+      let session;
+      let handle;
       const server = createServer((request, response) => {
         const given = Buffer.from(request.headers.authorization ?? "");
         if (
@@ -201,6 +207,7 @@ function mcpHost(servers) {
         }
         const chunks = [];
         let size = 0;
+        const sent = request.headers[MCP_SESSION_HEADER];
         request.on("data", (chunk) => {
           size += chunk.length;
           if (size > MCP_BODY_LIMIT) request.destroy();
@@ -209,16 +216,29 @@ function mcpHost(servers) {
         request.on("end", async () => {
           try {
             const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-            const answers = (
-              await Promise.all(
-                (Array.isArray(body) ? body : [body]).map(handler),
-              )
-            ).filter((answer) => answer !== undefined);
+            const messages = Array.isArray(body) ? body : [body];
+            if (messages.some((m) => m.method === "initialize")) {
+              if (session && !options?.sharedSession) {
+                response.writeHead(404).end();
+                void handle.close();
+                return;
+              }
+              session ??= randomUUID();
+            } else if (sent !== session) {
+              response.writeHead(404).end();
+              return;
+            }
+            const answers = (await Promise.all(messages.map(handler))).filter(
+              (answer) => answer !== undefined,
+            );
             if (!answers.length) {
               response.writeHead(202).end();
               return;
             }
-            response.writeHead(200, { "content-type": "application/json" });
+            response.writeHead(200, {
+              "content-type": "application/json",
+              [MCP_SESSION_HEADER]: session,
+            });
             response.end(
               JSON.stringify(Array.isArray(body) ? answers : answers[0]),
             );
@@ -233,7 +253,7 @@ function mcpHost(servers) {
       server.on("close", () => resolveClosed());
       server.listen(0, LOOPBACK, () => {
         const { port } = server.address();
-        const handle = {
+        handle = {
           url: `http://${LOOPBACK}:${port}/mcp`,
           headers: [{ name: "Authorization", value: `Bearer ${token}` }],
           close: () =>

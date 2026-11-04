@@ -25,6 +25,10 @@ const PLUGIN_ID = "sagmans.hermes";
 /** A turn's run returns once Hermes has it, so this bounds only the
  * hand-over, which includes the first `hermes acp` start. */
 const HANDOVER_MS = 2 * 60_000;
+/** The host serves the Buzz tools to Hermes in one MCP session that every
+ * client given the token joins (`sharedMcpHost`). */
+const SHARED_MCP = { sharedSession: true } as const;
+const NO_MCP = "This host serves no MCP";
 
 export const inject = ["react", "agents", "host"];
 
@@ -36,7 +40,7 @@ export function apply(ctx: Context) {
     return;
   const typeKey = `${ctx.pluginOwner?.id ?? PLUGIN_ID}/${TYPE_ID}`;
   const runtime = new GooseRuntime(
-    host,
+    sharedMcpHost(host),
     (key) => agents.relay(key),
     (key, signal) => agents.core(key, signal),
     globalThis.localStorage,
@@ -64,6 +68,24 @@ export function apply(ctx: Context) {
   });
 
   agents.register<Config>(hermesType(runtime, createViews(react, setup)));
+}
+
+/** The host the runtime serves Buzz tools through, with every MCP server in
+ * a shared session.
+ *
+ * Why: the app's host lets one MCP client hold a server's token and stops
+ * the server at a second `initialize`. The Hermes gateway (0.22.1) connects
+ * at `session/new` to freeze the tool list, disconnects when no client views
+ * the session yet, and connects again for each turn. So a second `initialize`
+ * always comes, and without a shared session the first turn fails with
+ * "another program used their token". Hermes keeps the server's address and
+ * token only in memory: its durable session state holds a fingerprint and
+ * the tool schemas (gateway/session_local_mcp.py). The token stays loopback
+ * only, per session, and stops with the session. */
+function sharedMcpHost(host: Context["host"]): Context["host"] {
+  const serveMcp: NonNullable<Context["host"]["serveMcp"]> = (handler) =>
+    host.serveMcp?.(handler, SHARED_MCP) ?? Promise.reject(new Error(NO_MCP));
+  return Object.create(host, { serveMcp: { value: serveMcp } });
 }
 
 type Views = ReturnType<typeof createViews>;
