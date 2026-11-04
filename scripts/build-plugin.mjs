@@ -32,8 +32,9 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-/** The buzz-app revision of Buzz Desktop 0.7.0-preview.240.1. */
-export const BUZZ_APP_REV = "0b2dfbf98";
+/** The buzz-app revision of Buzz Desktop 0.7.0-preview.240.1. The full SHA: a
+ * short prefix could also name a later commit made to share it. */
+export const BUZZ_APP_REV = "0b2dfbf9889ea95873f175b216fbb0b5795f104e";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CLONE_LINK = join(ROOT, "buzz-app");
 const MANIFEST = join(ROOT, "plugin", "manifest.json");
@@ -168,9 +169,9 @@ function clone() {
     timeout: GIT_TIMEOUT_MS,
     capture: true,
   });
-  if (!head.startsWith(BUZZ_APP_REV))
+  if (head !== BUZZ_APP_REV)
     throw new BuildError(
-      `buzz-app clone is at ${head.slice(0, 12)}, not ${BUZZ_APP_REV}: check out the pinned revision`,
+      `buzz-app clone is at ${head}, not ${BUZZ_APP_REV}: check out the pinned revision`,
       { exit: EXIT_CONFIG },
     );
   const dirty = run(

@@ -107,7 +107,8 @@ A changed setting opens a new session at the next idle turn.
 ## Compatibility
 
 The plugin bundles modules of the Buzz app at one revision
-(`BUZZ_APP_REV` in `scripts/build-plugin.mjs`): `0b2dfbf98`, the revision
+(`BUZZ_APP_REV` in `scripts/build-plugin.mjs`):
+`0b2dfbf9889ea95873f175b216fbb0b5795f104e`, the revision
 of Buzz Desktop 0.7.0-preview.240.1. A new app release can change these
 modules. Before you use the plugin with a newer app, move the pin to that
 release, then build and run `scripts/check`.
@@ -120,7 +121,7 @@ packages of its own.
 
 ```sh
 git clone https://github.com/block/buzz-app.git <clone>
-git -C <clone> checkout 0b2dfbf98
+git -C <clone> checkout 0b2dfbf9889ea95873f175b216fbb0b5795f104e
 (cd <clone> && bin/pnpm install --frozen-lockfile --ignore-scripts)
 scripts/link-toolchain <clone>      # makes the gitignored buzz-app link
 node scripts/build-plugin.mjs       # type check, then dist/
