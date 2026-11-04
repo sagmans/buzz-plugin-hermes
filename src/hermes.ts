@@ -46,9 +46,10 @@ export const PROCESS_ID = "hermes";
 export const LABEL = "Hermes";
 
 /** What every `hermes acp` runs with. Buzz gives each session its own tools
- * over MCP, so the MCP servers in the owner's Hermes config do not start in
- * a Buzz agent (buzz-acp sets the same variable for Hermes). The shared
- * client always removes the Buzz identity from the environment. */
+ * over MCP; buzz-acp sets the same variable for Hermes. Since Hermes 0.22.1
+ * the gateway owns MCP and ignores it, so it only matters to an older
+ * Hermes. The shared client always removes the Buzz identity from the
+ * environment. */
 export const ENV: Readonly<Record<string, string | null>> = {
   HERMES_ACP_SKIP_CONFIGURED_MCP: "1",
 };

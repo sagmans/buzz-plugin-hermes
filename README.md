@@ -74,13 +74,14 @@ A changed setting opens a new session at the next idle turn.
 - Hermes has no system-prompt or steer extension in ACP. The Buzz system
   prompt goes at the head of the first prompt of a session, and a message
   that comes during a turn runs as the next turn.
-- The MCP servers in your Hermes config do not start in a Buzz agent
-  (`HERMES_ACP_SKIP_CONFIGURED_MCP=1`). Each session gets the Buzz tools.
+- Each session gets the Buzz tools. The Hermes gateway, not the plugin,
+  decides which MCP servers from your Hermes config a session also gets.
+  Since Hermes 0.22.1, `HERMES_ACP_SKIP_CONFIGURED_MCP` has no effect.
 - Hermes 0.22.1 does not advertise HTTP MCP in its ACP `initialize` answer,
   but it accepts HTTP MCP servers. The plugin adds the missing flag to that
   one answer (`src/hermes.ts`, `hermesSpawn`). The smoke run proves that
   Hermes reaches the Buzz tools.
-- The Hermes gateway connects to the Buzz tools again for each turn. The
+- The Hermes gateway connects to the Buzz tools again for a turn. The
   app's host normally lets one MCP client use a session's token. The plugin
   asks the host for a shared MCP session, so each client that has the token
   can connect (`src/index.ts`, `sharedMcpHost`). The token stays on loopback,
