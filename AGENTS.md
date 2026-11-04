@@ -18,7 +18,9 @@ true when you change behavior.
 | `src/sessions.ts` | Replaces buzz-app `bundled/goose/sessions.ts`: the plugin's own storage key. |
 | `src/service-shim.ts` | Replaces buzz-app `features/agents/service.ts` in the bundle: only `fromOwner`. |
 | `src/setup.ts` | Model discovery through a throwaway Hermes session. |
-| `src/views.ts` | Create and Settings views, with `ctx.react`. |
+| `src/views.tsx` | Create and Settings views, from buzz-app's own components. |
+| `src/react-host.ts` | Every `react` import in the bundle: forwards to the app's React. |
+| `src/save-footer.tsx` | Puts the Settings Save action in the panel's sticky footer. |
 | `scripts/build-plugin.mjs` | Type check and bundle with the pinned buzz-app clone (`BUZZ_APP_REV`). |
 | `scripts/link-toolchain` | Makes the gitignored `buzz-app` link to the clone. |
 | `smoke/run.mjs` | End-to-end smoke run: the built plugin against real Hermes. |
@@ -42,9 +44,17 @@ settings. Do not edit the files that come from the hook template:
 
 ## Plugin rules
 
-- `dist/plugin.js` must stay one ES module with no imports. Use
-  `ctx.react` for React. The build's FORBIDDEN list enforces this; never
-  shorten it.
+- `dist/plugin.js` must stay one ES module with no imports. The build's
+  FORBIDDEN list and its import check enforce this; never shorten them.
+- Every `react` import resolves to `src/react-host.ts`. It forwards to the
+  app's React after `bindReact(ctx.react)`, so the bundled buzz-app
+  components share the app's hooks. The clone's `react` package must have
+  the same version as the app's React; `bindReact` stops on a mismatch.
+- The views bundle buzz-app components, not copies, so they look as the
+  app's own agents do. The build drops their CSS: the class names are
+  content hashes that the app's stylesheet of the same revision already
+  has. On each new `BUZZ_APP_REV`, check the New agent dialog and the
+  agent's Settings tab live in that app version.
 - Do not edit the buzz-app clone. A revision change goes through
   `BUZZ_APP_REV`, the README "Compatibility" section and the smoke run.
 - The manifest host grant is security-relevant. `scripts/check` requires

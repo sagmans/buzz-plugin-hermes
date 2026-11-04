@@ -25,7 +25,9 @@ flowchart TB
 - Only the owner, or an identity the owner delegated to, can start a turn
   with a mention. Hermes runs commands as you, so other mentions are ignored.
 - The New agent dialog and the Settings tab list the models that Hermes
-  offers. "Hermes default" keeps the model of your Hermes config.
+  offers. "Default" keeps the model of your Hermes config.
+- These views use the app's own model picker, instructions field and
+  settings rows, so they look as they do for the app's own agents.
 
 ## Requirements
 
@@ -88,6 +90,8 @@ A changed setting opens a new session at the next idle turn.
   and it is valid only for one session. Hermes keeps it only in memory.
 - No Activity tab and no synced settings: these are app modules, not plugin
   API.
+- The Settings tab does not warn about unsaved changes when you leave it.
+  The plugin API does not give that part of the app to plugins.
 
 ## Compatibility
 
@@ -113,7 +117,8 @@ node scripts/build-plugin.mjs       # type check, then dist/
 
 The build fails when the clone is at another revision, has local edits
 under `src/`, or when the bundle would hold a module that must stay the
-app's own (React, Tauri, the agent service, identity code or CSS).
+app's own (a React renderer, Tauri, the agent service or identity code).
+React itself comes from the app at run time (`src/react-host.ts`).
 
 ## Checks
 
