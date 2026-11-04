@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Links this repository to a buzz-app clone, the source of the modules the
+# plugin bundles unchanged and of the build tools (Vite, TypeScript). The
+# clone path differs per machine, so it is never written into a tracked file:
+# a gitignored link carries it.
+#
+#   buzz-app  -> <clone>   (tsconfig paths, the build's @app alias)
+#
+# Usage: scripts/link-toolchain <buzz-app clone>   (or set BUZZ_APP_DIR)
+# Prepare the clone first: check out the revision in scripts/build-plugin.mjs
+# (BUZZ_APP_REV), then run `bin/pnpm install --frozen-lockfile --ignore-scripts`
+# there (README, "Build").
+set -euo pipefail
+
+readonly EX_USAGE=64
+readonly EX_CONFIG=78
+readonly CLONE_LINK=buzz-app
+# buzz-app's root package name; anything else is not the clone the plugin
+# was written against.
+readonly EXPECTED_PACKAGE='"name": "buzz-foundation"'
+
+die() {
+	echo "link-toolchain: $2" >&2
+	exit "$1"
+}
+
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+clone=${1:-${BUZZ_APP_DIR:-}}
+[ -n "$clone" ] || die "$EX_USAGE" "usage: scripts/link-toolchain <buzz-app clone> (or set BUZZ_APP_DIR)"
+[ -d "$clone" ] || die "$EX_CONFIG" "not a directory: $clone"
+clone=$(cd -- "$clone" && pwd -P)
+
+if ! { [ -f "$clone/package.json" ] && grep -qF "$EXPECTED_PACKAGE" "$clone/package.json"; }; then
+	die "$EX_CONFIG" "$clone is not a buzz-app clone (package.json name is not buzz-foundation)"
+fi
+[ -d "$clone/src" ] || die "$EX_CONFIG" "$clone has no src/ folder"
+[ -d "$clone/node_modules" ] ||
+	die "$EX_CONFIG" "$clone has no node_modules: run 'bin/pnpm install --frozen-lockfile --ignore-scripts' there first"
+
+link_path="$repo_root/$CLONE_LINK"
+# A real folder at the link path is someone's work, never replaced.
+if [ -e "$link_path" ] && [ ! -L "$link_path" ]; then
+	die "$EX_CONFIG" "$link_path exists and is not a link; move it away first"
+fi
+ln -sfn -- "$clone" "$link_path"
+echo "linked $link_path -> $clone"

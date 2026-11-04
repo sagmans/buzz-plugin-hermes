@@ -1,0 +1,15 @@
+{
+  "id": "sagmans.hermes",
+  "name": "Hermes",
+  "apiVersion": 1,
+  "description": "Run local Hermes Agent agents in Buzz. Each conversation is one Hermes ACP session on this computer, with the provider and model that Hermes is set up with.",
+  "discovery": {
+    "category": "agents",
+    "tags": ["code", "coding-agents", "Hermes"]
+  },
+  "host": {
+    "processes": [{ "id": "hermes", "program": "hermes", "args": ["acp"] }],
+    "mcp": true,
+    "files": true
+  }
+}

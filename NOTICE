@@ -1,0 +1,23 @@
+buzz-plugin-hermes
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes software from Buzz (block/buzz-app),
+Copyright 2026 Block, Inc., licensed under the Apache License, Version 2.0:
+https://github.com/block/buzz-app
+
+The built plugin (dist/plugin.js) bundles buzz-app modules unchanged at the
+revision in scripts/build-plugin.mjs (BUZZ_APP_REV): among them
+src/bundled/goose/runtime.ts, src/bundled/goose/sessions.ts,
+src/features/agent-harness/acp/ and src/buzz-mcp/. The build replaces three
+modules with this repository's own (see the SWAPS list there).
+
+These files repeat or adapt buzz-app code; each marks it in a comment:
+
+- src/hermes.ts: the process adapter shape of src/bundled/goose/goose.ts.
+- src/sessions.ts: wraps src/bundled/goose/sessions.ts.
+- src/index.ts: the agent type and sessions list of
+  src/bundled/goose/index.ts.
+- tsconfig.json: the compiler options of buzz-app's tsconfig.json.
+
+Hermes Agent is a project of Nous Research. This plugin is not affiliated
+with or endorsed by Nous Research or Block, Inc.
