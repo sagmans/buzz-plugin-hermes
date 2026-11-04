@@ -13,7 +13,9 @@ import {
   GooseRuntime,
 } from "@app/bundled/goose/runtime";
 import { HermesLogoIcon } from "@app/shared/design-system/icons";
-import { LABEL } from "./hermes";
+import { createActivity } from "./activity";
+import { GooseProcess, LABEL } from "./hermes";
+import { AcpHistory, SessionLog } from "./history";
 import { bindReact } from "./react-host";
 import { HermesSetup } from "./setup";
 import { createViews } from "./views";
@@ -31,6 +33,9 @@ const HANDOVER_MS = 2 * 60_000;
  * client given the token joins (`sharedMcpHost`). */
 const SHARED_MCP = { sharedSession: true } as const;
 const NO_MCP = "This host serves no MCP";
+/** This plugin's local storage key for the sessions its agents ran. A new
+ * shape needs a new version suffix: saved agents read this one. */
+const HISTORY_KEY = "sagmans.hermes.history.v1";
 
 export const inject = ["react", "agents", "host"];
 
@@ -66,12 +71,40 @@ export function apply(ctx: Context) {
   };
   const unsubscribe = agents.subscribe(sync);
   sync();
+  const log = new SessionLog(globalThis.localStorage, HISTORY_KEY);
+  const stopLog = runtime.subscribe(() => {
+    const snapshot = agents.snapshot();
+    if (snapshot.status === "loading") return;
+    for (const agent of snapshot.running)
+      if ((agent as Agent).type === typeKey)
+        log.record(
+          (agent as Agent).key,
+          runtime,
+          config((agent as Agent).config).workspace,
+        );
+  });
+  const ActivityTab = createActivity(
+    LABEL,
+    runtime,
+    new AcpHistory(
+      {
+        spawn: host.spawn.bind(host),
+        resolveDirectory: host.resolveDirectory.bind(host),
+      },
+      (spawn, launch) => GooseProcess.start(spawn, launch),
+    ),
+    log,
+    (saved) => config(saved).workspace,
+  );
   ctx.effect(() => () => {
     unsubscribe();
+    stopLog();
     runtime.dispose();
   });
 
-  agents.register<Config>(hermesType(runtime, createViews(setup)));
+  agents.register<Config>(
+    hermesType(runtime, { ...createViews(setup), ActivityTab }),
+  );
 }
 
 /** The host the runtime serves Buzz tools through, with every MCP server in
@@ -92,12 +125,14 @@ function sharedMcpHost(host: Context["host"]): Context["host"] {
   return Object.create(host, { serveMcp: { value: serveMcp } });
 }
 
-type Views = ReturnType<typeof createViews>;
+type Views = ReturnType<typeof createViews> & {
+  ActivityTab: ReturnType<typeof createActivity>;
+};
 
 /** The Hermes agent type, on `runtime` and with `views`. */
 function hermesType(
   runtime: GooseRuntime,
-  { Create, CreateModel, SettingsTab }: Views,
+  { Create, CreateModel, SettingsTab, ActivityTab }: Views,
 ): AgentType<Config> {
   return {
     id: TYPE_ID,
@@ -143,6 +178,12 @@ function hermesType(
         role: "settings",
         splitSettings: true,
         component: SettingsTab,
+      },
+      {
+        id: "activity",
+        title: "Activity",
+        role: "activity",
+        component: ActivityTab,
       },
     ],
     sessionControls: {
