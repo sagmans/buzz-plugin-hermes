@@ -37,10 +37,12 @@ HOOK_LIB="$REPO_TOP/.githooks/lib"
 CHECK=repo-check
 MANIFEST=plugin/manifest.json
 BUILD_PLUGIN=scripts/build-plugin.mjs
+LOCKFILE=pnpm-lock.yaml
 LINK_TOOLCHAIN=scripts/link-toolchain
 SMOKE=smoke/run.mjs
 TOOLCHAIN_LINK=buzz-app
-# buzz-app's own formatter and linter, and the config its code follows.
+# buzz-app's formatter at this repository's pin, with the config buzz-app's code
+# follows, which the clone holds.
 BIOME_BIN=node_modules/.bin/biome
 BIOME_CONFIG=biome.json
 # Buzz manifest limits (buzz-app crates/plugin-manager): id shape and length,
@@ -59,6 +61,8 @@ LIZARD_MAX_LENGTH=100
 SEMGREP_TIMEOUT_SECONDS=300
 TRIVY_TIMEOUT_SECONDS=300
 BUILD_TIMEOUT_SECONDS=600
+PNPM_INSTALL_TIMEOUT_SECONDS=300
+PNPM_MIN_VERSION=12.4.2
 SMOKE_TIMEOUT_SECONDS=600
 SEMGREP_REGISTRY_CONFIG=p/javascript
 # Minimum versions: the releases these flags and rule sets were verified with.
@@ -234,6 +238,17 @@ check_private_data() {
 	[ "$found" -eq 0 ] || fail "remove the private data above (use neutral words such as \"the user\" or example.com)"
 }
 
+# This repository's packages, exactly as its lockfile pins them: the judged
+# tree is built and smoke-tested with them, never with whatever is installed.
+# The install reads the release-age guard in pnpm-workspace.yaml, and no
+# install script runs.
+install_packages() {
+	has_file "$LOCKFILE" || return 0
+	require_tool "$CHECK" pnpm "$PNPM_MIN_VERSION" 'install pnpm (mise install, see mise.toml)' pnpm --version
+	run_with_timeout "$PNPM_INSTALL_TIMEOUT_SECONDS" pnpm install --frozen-lockfile --ignore-scripts --reporter=silent ||
+		fail "cannot install the packages from $LOCKFILE"
+}
+
 # The buzz-app clone the plugin builds with: BUZZ_APP_DIR, else this
 # checkout's link. A full check without it cannot judge the plugin.
 toolchain_clone() {
@@ -253,6 +268,7 @@ toolchain_clone() {
 check_plugin() {
 	has_file "$BUILD_PLUGIN" || return 0
 	local clone
+	install_packages
 	clone="$(toolchain_clone)" || fail "no buzz-app clone: set BUZZ_APP_DIR or run $LINK_TOOLCHAIN <clone> (README, Build)"
 	has_file "$LINK_TOOLCHAIN" || fail "$BUILD_PLUGIN exists but $LINK_TOOLCHAIN is missing"
 	require_node
@@ -266,18 +282,18 @@ check_plugin() {
 		fail "smoke run failed (Hermes set up and its gateway running? README, Requirements)"
 }
 
-# Format and lint the plugin's own code with buzz-app's Biome and its config,
-# so the code it adds reads as the app code it runs next to. Needs the clone,
-# as the build does.
+# Format and lint the plugin's own code with buzz-app's Biome config, so the
+# code it adds reads as the app code it runs next to. Needs the clone for the
+# config, and this checkout's packages for the tool.
 check_biome() {
 	local clone list
 	list="$(files_with ts mjs | grep -v '^\.githooks/' || true)"
 	[ -n "$list" ] || return 0
 	clone="$(toolchain_clone)" || fail "no buzz-app clone for Biome: set BUZZ_APP_DIR or run $LINK_TOOLCHAIN <clone> (README, Build)"
-	[ -x "$clone/$BIOME_BIN" ] || fail "no Biome in $clone: run 'bin/pnpm install --frozen-lockfile --ignore-scripts' there"
+	[ -x "$REPO_TOP/$BIOME_BIN" ] || fail "no Biome in $REPO_TOP: run 'pnpm install --frozen-lockfile --ignore-scripts' there"
 	# shellcheck disable=SC2086  # one path per word
-	"$clone/$BIOME_BIN" check --config-path="$clone/$BIOME_CONFIG" --no-errors-on-unmatched -- $list ||
-		fail "biome found format or lint problems; run: $clone/$BIOME_BIN check --config-path=$clone/$BIOME_CONFIG --write <file>"
+	"$REPO_TOP/$BIOME_BIN" check --config-path="$clone/$BIOME_CONFIG" --no-errors-on-unmatched -- $list ||
+		fail "biome found format or lint problems; run: $BIOME_BIN check --config-path=$clone/$BIOME_CONFIG --write <file>"
 }
 
 # The generic hook lints only staged Markdown; at push the whole tree is judged.

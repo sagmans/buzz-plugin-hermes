@@ -2,8 +2,10 @@
 // all in one `hermes acp` process. Each conversation an agent is in is one
 // ACP session in it; Hermes answers with the Buzz tools that the app serves to
 // it over loopback HTTP MCP, signed by the agent's key that the app keeps.
-// The turn logic is buzz-app's Goose runtime, bundled unchanged; the build
-// swaps its process adapter for `./hermes` (scripts/build-plugin.mjs).
+// The turn logic is buzz-app's Goose runtime, and `gooseRun` is how the native
+// Goose type runs on it (turns, session controls, synced settings, resume),
+// bundled unchanged; the build swaps its process adapter for `./hermes`
+// (scripts/build-plugin.mjs).
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent, AgentType } from "@app/features/agents/service";
 import {
@@ -12,12 +14,18 @@ import {
   DEFAULT_CONFIG,
   GooseRuntime,
 } from "@app/bundled/goose/runtime";
+import { gooseRun } from "@app/bundled/goose/run";
+import { repositoriesContext } from "@app/features/communities/repositories";
 import { HermesLogoIcon } from "@app/shared/design-system/icons";
 import { createActivity } from "./activity";
-import { GooseProcess, LABEL } from "./hermes";
-import { AcpHistory, SessionLog } from "./history";
+import { createProvider } from "./provider";
+import { LABEL, recordWith, startReader } from "./hermes";
+import { RecordedHistory } from "./history";
 import { bindReact } from "./react-host";
+import { ActivityRecorder } from "./recorder";
+import { ActivitySessions, HarnessReader, SessionLog } from "./session-read";
 import { HermesSetup } from "./setup";
+import { recordedSpawn } from "./steer-record";
 import { createViews } from "./views";
 
 /** The agent type id. Saved agents match on it: never change it. */
@@ -26,16 +34,25 @@ export const TYPE_ID = "hermes";
 const SHARED_RUNTIME = "hermes";
 /** The manifest id, when the host does not say it. */
 const PLUGIN_ID = "sagmans.hermes";
-/** A turn's run returns once Hermes has it, so this bounds only the
- * hand-over, which includes the first `hermes acp` start. */
-const HANDOVER_MS = 2 * 60_000;
 /** The host serves the Buzz tools to Hermes in one MCP session that every
  * client given the token joins (`sharedMcpHost`). */
 const SHARED_MCP = { sharedSession: true } as const;
 const NO_MCP = "This host serves no MCP";
-/** This plugin's local storage key for the sessions its agents ran. A new
- * shape needs a new version suffix: saved agents read this one. */
+/** The agent storage key of an agent's activity record, before its agent key.
+ * A new shape needs a new version suffix: saved records read this one. */
+const ACTIVITY_PREFIX = "sagmans.hermes.activity.v1:";
+/** The local storage key of the sessions each agent ran. Saved logs read this
+ * one, so sessions from before the record still show. */
 const HISTORY_KEY = "sagmans.hermes.history.v1";
+/** No discovery of sessions the log does not name: Hermes' `session/load` moves a
+ * session whose cwd differs (acp_adapter/gateway_server.py, `_resume`), and its
+ * `session/list` does not name the sessions the gateway runs. */
+const DISCOVERS_SESSIONS = false;
+/** Why the app stops a protected agent of this type. The app stops it anyway, as
+ * the type does not claim `protection`, but its stock words point at no cause.
+ * See README, "Limits", for the sources. */
+const PROTECTION_UNAVAILABLE =
+  "Hermes runs tools in its gateway, outside the process Buzz starts, so Buzz cannot enforce a protection policy on them.";
 
 export const inject = ["react", "agents", "host"];
 
@@ -48,19 +65,23 @@ export function apply(ctx: Context) {
   if (!host.spawn || !host.resolveDirectory || !host.readFile || !host.serveMcp)
     return;
   const typeKey = `${ctx.pluginOwner?.id ?? PLUGIN_ID}/${TYPE_ID}`;
+  const recorder = new ActivityRecorder(agents.storage, ACTIVITY_PREFIX);
+  recordWith((spawn) => recordedSpawn(recorder, spawn));
   const runtime = new GooseRuntime(
     sharedMcpHost(host),
     (key) => agents.relay(key),
     (key, signal) => agents.core(key, signal),
     globalThis.localStorage,
     () => agents.tools(),
-    // Desktop's repository instructions are an app module, not plugin API.
-    () => "",
+    // The community's repositories folder, as the native Goose type passes
+    // it: this module only reads the app's local storage.
+    repositoriesContext,
     agents.storage,
   );
   const setup = new HermesSetup({
     spawn: host.spawn.bind(host),
     resolveDirectory: host.resolveDirectory.bind(host),
+    readFile: host.readFile.bind(host),
   });
   const sync = () => {
     const snapshot = agents.snapshot();
@@ -83,28 +104,34 @@ export function apply(ctx: Context) {
           config((agent as Agent).config).workspace,
         );
   });
-  const ActivityTab = createActivity(
-    LABEL,
-    runtime,
-    new AcpHistory(
-      {
-        spawn: host.spawn.bind(host),
-        resolveDirectory: host.resolveDirectory.bind(host),
-      },
-      (spawn, launch) => GooseProcess.start(spawn, launch),
-    ),
-    log,
-    (saved) => config(saved).workspace,
-  );
   ctx.effect(() => () => {
     unsubscribe();
     stopLog();
     runtime.dispose();
+    recordWith(undefined);
+    void recorder.flush();
   });
 
-  agents.register<Config>(
-    hermesType(runtime, { ...createViews(setup), ActivityTab }),
+  const history = new RecordedHistory(recorder);
+  const sessions = new ActivitySessions(
+    history,
+    log,
+    new HarnessReader(
+      {
+        spawn: host.spawn.bind(host),
+        resolveDirectory: host.resolveDirectory.bind(host),
+      },
+      startReader,
+    ),
+    DISCOVERS_SESSIONS,
   );
+  const { ActivityTab } = createActivity({
+    runtime,
+    history,
+    recorder,
+    sessions,
+  });
+  agents.register<Config>(hermesType(runtime, setup, ActivityTab, history));
 }
 
 /** The host the runtime serves Buzz tools through, with every MCP server in
@@ -125,15 +152,14 @@ function sharedMcpHost(host: Context["host"]): Context["host"] {
   return Object.create(host, { serveMcp: { value: serveMcp } });
 }
 
-type Views = ReturnType<typeof createViews> & {
-  ActivityTab: ReturnType<typeof createActivity>;
-};
-
-/** The Hermes agent type, on `runtime` and with `views`. */
+/** The Hermes agent type, on `runtime`, whose views and picks read `setup`. */
 function hermesType(
   runtime: GooseRuntime,
-  { Create, CreateModel, SettingsTab, ActivityTab }: Views,
+  setup: HermesSetup,
+  ActivityTab: ReturnType<typeof createActivity>["ActivityTab"],
+  history: RecordedHistory,
 ): AgentType<Config> {
+  const { Create, CreateModel, SettingsTab } = createViews(setup);
   return {
     id: TYPE_ID,
     title: LABEL,
@@ -141,6 +167,7 @@ function hermesType(
     icon: HermesLogoIcon,
     description:
       "Hermes Agent on this computer, with the provider and model Hermes is set up with. Each thread it is mentioned in is one continuing conversation.",
+    protectionUnavailable: PROTECTION_UNAVAILABLE,
     defaults: () => ({ config: DEFAULT_CONFIG }),
     Create,
     CreateModel,
@@ -186,18 +213,13 @@ function hermesType(
         component: ActivityTab,
       },
     ],
-    sessionControls: {
-      scope: (agent) => config(agent.config).scope,
-      state: (agent, place) => runtime.sessionState(agent, place),
-      run: (agent, place, action) => runtime.session(agent, place, action),
-      subscribe: (listener) => runtime.subscribe(listener),
-    },
-    run: (delivery) => runtime.run(delivery),
-    runOnce: (turn) => runtime.runOnce(turn),
-    timeoutMs: HANDOVER_MS,
-    // Closing or reloading the app stops its turns; each resumed one carries
-    // on in a new session shown what it already did in the conversation.
-    resumes: true,
+    provider: createProvider(setup),
+    // No cost: Hermes reports none over ACP (its `usage_update` has only the
+    // context size), and this plugin invents none.
+    usage: (agent, options) => history.usage(agent.key, options),
+    // Per-message picks, as the native type offers them.
+    models: (agent) => setup.picks(config(agent.config)),
+    ...gooseRun(runtime),
   };
 }
 

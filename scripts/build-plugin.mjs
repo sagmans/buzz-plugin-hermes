@@ -15,9 +15,13 @@
 // a second React, Tauri bindings, the real agent service or app stores would
 // run with their own state inside the plugin.
 //
+// The clone gives source only. The type check, the bundler and every package
+// in the bundle come from this repository's lockfile, so its minimum release
+// age and its dependency scan judge the whole build, and no package outside
+// that lockfile runs or is read.
+//
 // Usage: node scripts/build-plugin.mjs [--out <dir>] [--check-only]
-//   BUZZ_APP_DIR  the buzz-app clone (default: the `buzz-app` link at the
-//                 repository top), at BUZZ_APP_REV with its packages installed
+//   BUZZ_APP_DIR  must be the clone that the `buzz-app` link points to, when set
 //   --out <dir>   write there instead of dist/
 //   --check-only  type-check only, no bundle
 import { spawnSync } from "node:child_process";
@@ -29,12 +33,12 @@ import {
   realpathSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-/** The buzz-app revision of Buzz Desktop 0.7.0-preview.240.1. The full SHA: a
+/** The buzz-app revision of Buzz Desktop 0.7.0-preview.243.1. The full SHA: a
  * short prefix could also name a later commit made to share it. */
-export const BUZZ_APP_REV = "0b2dfbf9889ea95873f175b216fbb0b5795f104e";
+export const BUZZ_APP_REV = "56729773f48d3f922a043ac83b7faa727bcfc9c2";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CLONE_LINK = join(ROOT, "buzz-app");
 const MANIFEST = join(ROOT, "plugin", "manifest.json");
@@ -44,6 +48,22 @@ const OUT_NAME = "plugin.js";
  * Buzz loads no plugin CSS and already has these styles (FORBIDDEN). */
 const DROPPED_CSS_NAME = "dropped-styles";
 const EXPECTED_PACKAGE = "buzz-foundation";
+const OWN_MODULES = join(ROOT, "node_modules");
+/** This repository's own tools; any other copy is outside its lockfile. */
+const TSC = join(OWN_MODULES, ".bin", "tsc");
+const VITE = join(OWN_MODULES, "vite", "dist", "node", "index.js");
+/** Imports that name a file, a builtin or a module Vite made up, not a package. */
+const NOT_A_PACKAGE = /^(?:[./]|node:|\0|virtual:)/;
+/** An import statement left in the emitted module (rolldown writes each at
+ * the start of a line). */
+const STATIC_IMPORT = /^import\s(?:[^"';]*?\sfrom\s*)?["']([^"']+)["']/gm;
+/** A web worker in the emitted code. Plugin API v1 has no worker asset. */
+const WORKER = /\bnew Worker\(/;
+/** Supplied by Buzz at run time: a copy in the bundle would be a Cordis the
+ * app does not manage. React is not here: see REACT_HOST. */
+const HOST_SUPPLIED = /^(?:@buzz\/author$|@deepseek-ai\/cordis(?:\/|$))/;
+/** TypeScript sources a swapped module may resolve to. */
+const SOURCE_SUFFIX = /\.tsx?$/;
 const GIT_TIMEOUT_MS = 30_000;
 const TSC_TIMEOUT_MS = 5 * 60_000;
 const EXIT_USAGE = 64;
@@ -62,6 +82,8 @@ const SWAPS = {
   "bundled/goose/goose": "src/hermes.ts",
   "bundled/goose/sessions": "src/sessions.ts",
   "features/agents/service": "src/service-shim.ts",
+  // Its web worker is a file beside the module, which Plugin API v1 cannot load.
+  "features/messages/encode-webp": "src/encode-webp.ts",
 };
 /** Modules that must never be bundled (see the header). React itself is
  * bundled only behind src/react-host.ts (reactPlugin), and a React renderer
@@ -146,16 +168,22 @@ function run(
 }
 
 /** The clone, checked: buzz-app, at the pinned revision, no local edits under
- * src/, packages installed. */
+ * src/. */
 function clone() {
-  const given = resolve(process.env.BUZZ_APP_DIR || CLONE_LINK);
-  if (!existsSync(given))
+  if (!existsSync(CLONE_LINK))
     throw new BuildError(
-      `no buzz-app clone at ${given}: set BUZZ_APP_DIR or link it (README, "Build")`,
+      `no buzz-app link at ${CLONE_LINK}: run scripts/link-toolchain <clone> (README, "Build")`,
       { exit: EXIT_CONFIG },
     );
-  // The real path: the bundler names modules by it, and the swaps match on it.
-  const dir = realpathSync(given);
+  const dir = realpathSync(CLONE_LINK);
+  // The build reads the clone through the link, so another clone named here
+  // would be checked but not built.
+  const given = process.env.BUZZ_APP_DIR;
+  if (given && realpathSync(given) !== dir)
+    throw new BuildError(
+      `BUZZ_APP_DIR is ${given}, the buzz-app link points to ${dir}: run scripts/link-toolchain ${given}`,
+      { exit: EXIT_CONFIG },
+    );
   const pkg = join(dir, "package.json");
   if (
     !existsSync(pkg) ||
@@ -185,22 +213,36 @@ function clone() {
       `buzz-app clone has local edits under src/:\n${dirty}`,
       { exit: EXIT_CONFIG },
     );
-  if (!existsSync(join(dir, "node_modules", "vite")))
-    throw new BuildError(
-      `buzz-app clone has no packages: run 'bin/pnpm install --frozen-lockfile --ignore-scripts' in ${dir}`,
-      { exit: EXIT_CONFIG },
-    );
   return dir;
 }
 
-/** Resolves the swapped modules, by absolute path, from any importer except
- * the replacement itself (src/sessions.ts imports the original). */
+/** This repository's tools must be installed from its own lockfile. */
+function checkInstall() {
+  if (!existsSync(TSC) || !existsSync(VITE))
+    throw new BuildError(
+      "this repository's packages are not installed: run 'pnpm install --frozen-lockfile --ignore-scripts'",
+      { exit: EXIT_CONFIG },
+    );
+}
+
+/** True when `file` is inside `dir`. */
+function inside(dir, file) {
+  const path = relative(dir, file);
+  return path !== "" && !path.startsWith("..") && !isAbsolute(path);
+}
+
+/** Resolves the swapped modules from any importer except the replacement itself
+ * (src/sessions.ts imports the original), by the clone's link path and by its
+ * real path: Vite names a module by the link (preserveSymlinks), but a package
+ * can reach the clone by its real path. */
 function swapPlugin(app) {
   const swaps = new Map(
-    Object.entries(SWAPS).map(([from, to]) => [
-      join(app, "src", from),
-      join(ROOT, to),
-    ]),
+    Object.entries(SWAPS).flatMap(([from, to]) =>
+      [CLONE_LINK, app].map((base) => [
+        join(base, "src", from),
+        join(ROOT, to),
+      ]),
+    ),
   );
   return {
     name: "hermes-swaps",
@@ -211,11 +253,37 @@ function swapPlugin(app) {
         ...options,
         skipSelf: true,
       });
-      if (!resolved) return null;
-      const bare = resolved.id.replace(/\.(ts|tsx)$/, "");
+      if (!resolved || resolved.external) return null;
+      const bare = resolved.id.split("?")[0]?.replace(SOURCE_SUFFIX, "") ?? "";
       const target = swaps.get(bare);
       if (!target || importer === target) return null;
       return target;
+    },
+  };
+}
+
+/** A buzz-app module's package imports resolve from this repository, never
+ * from the clone, so this lockfile and its minimum age decide what the bundle
+ * holds. A package this repository does not declare is left out as an import:
+ * buzz-app modules import many packages for app code this plugin never runs,
+ * which tree-shaking drops. One that the plugin does run stays an import, and
+ * the bundle check stops the build (fail closed), so a new dependency is added
+ * to package.json on purpose, never pulled in unseen. */
+function ownDependencies(app) {
+  return {
+    name: "hermes-own-dependencies",
+    enforce: "pre",
+    async resolveId(source, importer, options) {
+      if (HOST_SUPPLIED.test(source)) return { id: source, external: true };
+      if (!importer || NOT_A_PACKAGE.test(source) || isAbsolute(source))
+        return null;
+      const from = importer.split("?")[0] ?? importer;
+      if (!inside(CLONE_LINK, from) && !inside(app, from)) return null;
+      const found = await this.resolve(source, ENTRY, {
+        ...options,
+        skipSelf: true,
+      });
+      return found ?? { id: source, external: true };
     },
   };
 }
@@ -239,12 +307,10 @@ function plainBuildAtLoad() {
 }
 
 /** Resolves the React packages before the swaps see them: `react` to Buzz's
- * React (REACT_HOST), the safe parts into the bundle from the clone's
+ * React (REACT_HOST), the safe parts into the bundle from this repository's
  * packages, any other part left as an import, which the bundle check then
  * rejects. */
-function reactPlugin(app) {
-  // Any module of the clone resolves its packages as buzz-app does.
-  const from = join(app, "src", "main.tsx");
+function reactPlugin() {
   return {
     name: "hermes-react-from-host",
     enforce: "pre",
@@ -253,10 +319,10 @@ function reactPlugin(app) {
       if (source === REACT_BUNDLED) {
         if (importer !== REACT_HOST)
           this.error(`${REACT_BUNDLED} is for src/react-host.ts only`);
-        return this.resolve("react", from, { ...options, skipSelf: true });
+        return this.resolve("react", ENTRY, { ...options, skipSelf: true });
       }
       if (REACT_BUNDLE.test(source))
-        return this.resolve(source, from, { ...options, skipSelf: true });
+        return this.resolve(source, ENTRY, { ...options, skipSelf: true });
       if (REACT_OTHER.test(source)) return { id: source, external: true };
       return null;
     },
@@ -264,16 +330,23 @@ function reactPlugin(app) {
 }
 
 async function bundle(app, out) {
-  const { build } = await import(
-    pathToFileURL(join(app, "node_modules", "vite", "dist", "node", "index.js"))
-      .href
-  );
+  const { build } = await import(pathToFileURL(VITE).href);
   const result = await build({
     configFile: false,
     root: ROOT,
     logLevel: "warn",
-    resolve: { alias: { "@app": join(app, "src") } },
-    plugins: [plainBuildAtLoad(), reactPlugin(app), swapPlugin(app)],
+    // Symlinks kept: buzz-app modules keep their buzz-app/... ids, so the bundle
+    // names them relative to the repository and holds no local path.
+    resolve: {
+      alias: { "@app": join(CLONE_LINK, "src") },
+      preserveSymlinks: true,
+    },
+    plugins: [
+      plainBuildAtLoad(),
+      reactPlugin(),
+      swapPlugin(app),
+      ownDependencies(app),
+    ],
     // buzz-app modules read Vite build inputs; an installed plugin has none.
     // React's packages pick their production build by NODE_ENV.
     define: {
@@ -290,7 +363,12 @@ async function bundle(app, out) {
         fileName: () => OUT_NAME,
         cssFileName: DROPPED_CSS_NAME,
       },
-      rollupOptions: { output: { codeSplitting: false } },
+      rolldownOptions: {
+        output: { codeSplitting: false },
+        // A left-out package is never loaded for its side effects alone: only
+        // one whose exports the plugin uses stays an import (see above).
+        treeshake: { moduleSideEffects: (_id, external) => !external },
+      },
     },
   });
   const output = (Array.isArray(result) ? result[0] : result).output;
@@ -304,9 +382,18 @@ async function bundle(app, out) {
     throw new BuildError(
       `the bundle holds app modules it must not copy:\n${bad.join("\n")}`,
     );
-  if (chunk.imports.length || chunk.dynamicImports.length)
+  // The emitted code, not `chunk.imports`: that lists every left-out package a
+  // bundled module named, also those tree-shaking then dropped.
+  const left = [...chunk.code.matchAll(STATIC_IMPORT)]
+    .map((match) => match[1])
+    .concat(chunk.dynamicImports);
+  if (left.length)
     throw new BuildError(
-      `the bundle imports other modules: ${[...chunk.imports, ...chunk.dynamicImports].join(", ")}`,
+      `the bundle imports other modules: ${left.join(", ")}: add each to package.json with a pinned version, or stop using it`,
+    );
+  if (WORKER.test(chunk.code))
+    throw new BuildError(
+      "the bundle holds a web worker, which Plugin API v1 cannot load",
     );
   mkdirSync(out, { recursive: true });
   writeFileSync(join(out, OUT_NAME), chunk.code);
@@ -319,14 +406,10 @@ async function bundle(app, out) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const app = clone();
-  run(
-    "type check",
-    join(app, "node_modules", ".bin", "tsc"),
-    ["--noEmit", "-p", join(ROOT, "tsconfig.json")],
-    {
-      timeout: TSC_TIMEOUT_MS,
-    },
-  );
+  checkInstall();
+  run("type check", TSC, ["--noEmit", "-p", join(ROOT, "tsconfig.json")], {
+    timeout: TSC_TIMEOUT_MS,
+  });
   if (!options.checkOnly) await bundle(app, options.out);
 }
 

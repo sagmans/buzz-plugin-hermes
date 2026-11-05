@@ -1,13 +1,16 @@
 // A session as ACP `session/load` replays it, in the app's turn-transcript
 // model, so the app's own ActivityTranscript shows it as it shows a Goose
-// session. A replay carries no times and no turn ends: its turns have no dates
-// and their status stays unknown, except for the one still working.
+// session. A replay carries no times and no turn ends: `overlaid` adds those from
+// the local record for the turns on record, and the rest show with no dates and
+// their status unknown.
 // (The same module as buzz-plugin-opencode's src/transcript.ts.)
 import {
   promptMessage,
   promptSections,
+  STEER,
   type ToolDiff,
   type ToolItem,
+  type TranscriptItem,
   type TranscriptTurn,
 } from "@app/features/agents/activity-transcript";
 
@@ -16,7 +19,8 @@ type Json = Record<string, unknown>;
 export type Update = Json;
 export type Place = Readonly<{ channelId: string; root?: string }>;
 
-const STEER = "new-message-arrived-while-you-were-working";
+/** The section of a prompt that holds no event: plain words only. */
+const TEXT_SECTION = "text";
 /** The time of an item in a replay: `ActivityTranscript` hides an unknown one. */
 const NO_TIME = 0;
 /** A Buzz message tool as a harness names it: `buzz_send`, `mcp__…__send`,
@@ -75,11 +79,14 @@ function postedText(update: Update) {
   return SEND_TOOL.test(name) ? str(args?.text).trim() : "";
 }
 
-/** A Buzz prompt, or a steer wrapping one, as a turn's opening item. */
+/** A Buzz prompt, or a steer, as a turn's opening item. A steer's section holds
+ * its event, which `promptMessage` reads. One saved by an earlier app release
+ * wraps a whole turn, whose sections are read from inside it. */
 function promptItem(id: string, raw: string) {
   let sections = promptSections(raw);
   const steer = sections.find((section) => section.tag === STEER);
-  if (steer) sections = promptSections(steer.body);
+  const inner = steer && promptSections(steer.body);
+  if (inner?.some((section) => section.tag !== TEXT_SECTION)) sections = inner;
   const { text, author } = promptMessage(sections);
   return {
     id,
@@ -285,4 +292,153 @@ export function acpTurns(
   const [first] = fold.turns;
   if (first && !first.partial) first.newSession = true;
   return fold.turns;
+}
+
+/** The first characters of a prompt: enough to know it, and short of where the
+ * record cuts a long one. */
+const PROMPT_MATCH_CHARS = 200;
+
+/** What a prompt asks, to pair it with the same one elsewhere. A steer's words are
+ * inside its wrapper, which the record keeps and a replay may not. */
+function promptKey(item: TranscriptItem | undefined) {
+  if (item?.type !== "prompt") return "";
+  const wrapper = item.sections.find((section) => section.tag === STEER);
+  const inner = wrapper && promptMessage(promptSections(wrapper.body)).text;
+  return (inner || item.text).trim().slice(0, PROMPT_MATCH_CHARS);
+}
+const openingKey = (turn: TranscriptTurn) =>
+  promptKey(turn.items.find((item) => item.type === "prompt"));
+
+/** The steers on record of one session's turns, by their words. */
+function steersOf(recorded: readonly TranscriptTurn[]) {
+  return new Set(
+    recorded.flatMap(({ items }) =>
+      items.flatMap((item) =>
+        item.type === "prompt" && item.steer ? [promptKey(item)] : [],
+      ),
+    ),
+  );
+}
+
+/** A harness may save a steer as a plain user message, which a replay then shows
+ * as a new turn. The record knows it for what it was: it goes back in the turn it
+ * steered, as a steer. */
+function steersFolded(
+  read: readonly TranscriptTurn[],
+  recorded: readonly TranscriptTurn[],
+) {
+  const steers = steersOf(recorded);
+  const turns: TranscriptTurn[] = [];
+  for (const turn of read) {
+    const previous = turns.at(-1);
+    const items = turn.items.map((item) =>
+      item.type === "prompt" && steers.has(promptKey(item))
+        ? { ...item, steer: true }
+        : item,
+    );
+    if (previous && steers.has(openingKey(turn)))
+      turns[turns.length - 1] = {
+        ...previous,
+        items: [...previous.items, ...items],
+      };
+    else turns.push({ ...turn, items });
+  }
+  return turns;
+}
+
+/** `items` with each steer on record that the replay does not show, after the
+ * step it came after. A harness that keeps steers out of its history would
+ * otherwise lose them from the transcript. */
+function withSteers(
+  items: readonly TranscriptItem[],
+  recorded: readonly TranscriptItem[],
+) {
+  const merged = [...items];
+  let anchor: TranscriptItem | undefined;
+  for (const item of recorded) {
+    if (item.type === "tool") {
+      anchor =
+        merged.find(
+          (other) =>
+            other.type === "tool" && other.toolCallId === item.toolCallId,
+        ) ?? anchor;
+    } else if (item.type === "prompt" && item.steer) {
+      const key = promptKey(item);
+      const shown = merged.find((other) => promptKey(other) === key);
+      if (!shown)
+        merged.splice(anchor ? merged.indexOf(anchor) + 1 : 1, 0, item);
+      anchor = shown ?? item;
+    }
+  }
+  return merged;
+}
+
+/** The times on record of a replay's prompt and tools: a replay has none. */
+function withTimes(
+  items: readonly TranscriptItem[],
+  recorded: readonly TranscriptItem[],
+) {
+  const opening = recorded.find((item) => item.type === "prompt");
+  const tools = new Map(
+    recorded.flatMap((item) =>
+      item.type === "tool" ? [[item.toolCallId, item] as const] : [],
+    ),
+  );
+  return items.map((item) => {
+    if (item.type === "tool") {
+      const tool = tools.get(item.toolCallId);
+      if (!tool) return item;
+      return {
+        ...item,
+        at: tool.at,
+        ...(tool.completedAt !== undefined
+          ? { completedAt: tool.completedAt }
+          : {}),
+      };
+    }
+    return item.type === "prompt" && !item.steer && opening
+      ? { ...item, at: opening.at }
+      : item;
+  });
+}
+
+/** A replayed turn with what the record knows of the same turn. The replay stays
+ * the source of what was said: it holds the whole text. */
+function withRecord(turn: TranscriptTurn, record: TranscriptTurn) {
+  return {
+    ...turn,
+    channelId: record.channelId,
+    threadRootId: record.threadRootId,
+    triggeringEventIds: record.triggeringEventIds,
+    config: record.config,
+    startedAt: record.startedAt,
+    ...(record.endedAt !== undefined ? { endedAt: record.endedAt } : {}),
+    ...(record.error !== undefined ? { error: record.error } : {}),
+    ...(record.stopReason !== undefined
+      ? { stopReason: record.stopReason }
+      : {}),
+    ...(record.context !== undefined ? { context: record.context } : {}),
+    items: withSteers(withTimes(turn.items, record.items), record.items),
+  };
+}
+
+/** A session's replayed turns with what the record adds to them: real times, how
+ * each ended, the model, and steers. Turns pair by their prompt's words, in order;
+ * a turn the record does not have stays as the replay gave it. */
+export function overlaid(
+  read: readonly TranscriptTurn[],
+  recorded: readonly TranscriptTurn[],
+): TranscriptTurn[] {
+  let next = 0;
+  return steersFolded(read, recorded).map((turn) => {
+    const key = openingKey(turn);
+    if (!key) return turn;
+    const index = recorded.findIndex(
+      (item, at) => at >= next && openingKey(item) === key,
+    );
+    const record = recorded[index];
+    if (!record) return turn;
+    next = index + 1;
+    return withRecord(turn, record);
+  });
 }

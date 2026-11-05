@@ -14,16 +14,23 @@ true when you change behavior.
 | --- | --- |
 | `plugin/manifest.json` | Plugin manifest and its host grant. |
 | `src/index.ts` | The agent type: registration, sessions list, settings tab. |
-| `src/hermes.ts` | Replaces buzz-app `bundled/goose/goose.ts`: `hermes acp`, its env, model switch, MCP capability fix. |
-| `src/sessions.ts` | Replaces buzz-app `bundled/goose/sessions.ts`: the plugin's own storage key. |
+| `src/hermes.ts` | Replaces buzz-app `bundled/goose/goose.ts`: `hermes acp`, its env, model switch, MCP capability fix, steering, compaction and per-turn usage (`HermesWire`). |
+| `src/sessions.ts` | Replaces buzz-app `bundled/goose/sessions.ts`: the plugin's own storage key, and a shared process that stops when idle or full. |
 | `src/service-shim.ts` | Replaces buzz-app `features/agents/service.ts` in the bundle: only `fromOwner`. |
-| `src/setup.ts` | Model discovery through a throwaway Hermes session. |
+| `src/setup.ts` | Model discovery through a throwaway Hermes session, and the provider check: installed, version, gateway state, models. It must not make Hermes start a gateway. |
+| `src/recorder.ts`, `src/history.ts` | Shared copies: a tap on an ACP process's JSON-RPC, the local activity record built on it, and the sessions and usage read from that record. Keep their code the same as the other ACP plugin's, except import paths and formatting. Name no harness in them. |
+| `src/steer-record.ts` | Files a steer that Hermes took in the turn it steered, which the shared recorder does not model. |
+| `src/session-read.ts`, `src/transcript.ts` | Shared copies: the session log, the short-lived `session/load` read with its limits, and a replay's turns with the record's times and steers. Keep their code the same as the other ACP plugin's, except import paths and formatting. |
+| `src/activity.tsx` | The Activity tab, from the app's own components: the read first, the record for the running session and as the fallback. |
+| `src/provider.tsx` | The app's provider row and dialog: what a setup check found. It shows; it never writes Hermes' setup or starts a gateway. |
 | `src/views.tsx` | Create and Settings views, from buzz-app's own components. |
 | `src/react-host.ts` | Every `react` import in the bundle: forwards to the app's React. |
 | `src/save-footer.tsx` | Puts the Settings Save action in the panel's sticky footer. |
-| `scripts/build-plugin.mjs` | Type check and bundle with the pinned buzz-app clone (`BUZZ_APP_REV`). |
+| `scripts/build-plugin.mjs` | Type check and bundle: source from the pinned buzz-app clone (`BUZZ_APP_REV`), every package from this repository's lockfile. |
 | `scripts/link-toolchain` | Makes the gitignored `buzz-app` link to the clone. |
-| `smoke/run.mjs` | End-to-end smoke run: the built plugin against real Hermes. |
+| `smoke/run.mjs` | End-to-end smoke run: the built plugin against a stand-in, then real Hermes. |
+| `smoke/stub.mjs` | The stand-in `hermes acp`: what real Hermes cannot show on demand. No model runs. |
+| `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` | Every package the build and the bundle use, and their minimum release age. |
 | `scripts/check` | All repository checks. The Git hooks call it. |
 | `scripts/setup-hooks`, `.githooks/` | Generic hooks and helpers, copied from a template. |
 | `.githooks/<hook>.d/` | This repository's own hook checks. |
@@ -48,15 +55,16 @@ settings. Do not edit the files that come from the hook template:
   FORBIDDEN list and its import check enforce this; never shorten them.
 - Every `react` import resolves to `src/react-host.ts`. It forwards to the
   app's React after `bindReact(ctx.react)`, so the bundled buzz-app
-  components share the app's hooks. The clone's `react` package must have
-  the same version as the app's React; `bindReact` stops on a mismatch.
+  components share the app's hooks. This repository's `react` package must
+  have the same version as the app's React; `bindReact` stops on a mismatch.
 - The views bundle buzz-app components, not copies, so they look as the
   app's own agents do. The build drops their CSS: the class names are
   content hashes that the app's stylesheet of the same revision already
   has. On each new `BUZZ_APP_REV`, check the New agent dialog and the
   agent's Settings tab live in that app version.
-- Do not edit the buzz-app clone. A revision change goes through
-  `BUZZ_APP_REV`, the README "Compatibility" section and the smoke run.
+- Do not edit the buzz-app clone, and do not install packages in it. A revision
+  change goes through `BUZZ_APP_REV`, the README "Compatibility" section and the
+  smoke run.
 - The manifest host grant is security-relevant. `scripts/check` requires
   exactly `hermes acp`, `mcp` and `files`. A change to the grant, to
   `ENV`, to `hermesSpawn` or to the permission behavior needs a reason in
@@ -64,7 +72,17 @@ settings. Do not edit the files that come from the hook template:
 - Do not change the manifest `id` (`sagmans.hermes`), the type id
   (`hermes`) or the storage key (`SESSIONS_KEY`). Saved agents match on
   them. A new storage shape needs a new key suffix and a migration.
-- No runtime dependencies. This repository has no package manifest.
+- Every package comes from this repository's lockfile, at an exact version. A
+  package with a reported security issue is never used. A patch for it has
+  priority over the minimum release age. The buzz-app clone gives source only.
+- Do not edit `src/recorder.ts` or `src/history.ts` for one harness. Put
+  Hermes' needs in `src/hermes.ts` or `src/steer-record.ts`.
+- The activity record holds private chat text. Never add a request that holds
+  credentials to it, and never send or log it. A change to its shape needs a
+  new `ACTIVITY_PREFIX` suffix.
+- The type claims no `hooks` and no `protection`: Hermes' tools run in its
+  gateway (README, "Limits"). Do not claim them unless Hermes gives a path
+  that can enforce them.
 
 ## Code rules
 

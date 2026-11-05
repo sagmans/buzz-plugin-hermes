@@ -7,25 +7,40 @@ https://github.com/block/buzz-app
 
 The built plugin (dist/plugin.js) bundles buzz-app modules unchanged at the
 revision in scripts/build-plugin.mjs (BUZZ_APP_REV): among them
-src/bundled/goose/runtime.ts, src/bundled/goose/sessions.ts,
+src/bundled/goose/runtime.ts, src/bundled/goose/run.ts,
+src/bundled/goose/sessions.ts,
 src/features/agent-harness/acp/ and src/buzz-mcp/. The build replaces three
 modules with this repository's own (see the SWAPS list there).
 
+With them, it bundles the npm packages those modules import, at the versions of
+buzz-app's lockfile. Among them are react-markdown 10.1.0 and remark-gfm 4.0.1
+(MIT License), which draw the Activity transcript, with the unified, micromark
+and mdast libraries they use (MIT License; @ungap/structured-clone: ISC). They
+keep their own copyright and license notices in their packages. This repository
+lists no dependency of its own.
+
 These files repeat or adapt buzz-app code; each marks it in a comment:
 
-- src/hermes.ts: the process adapter shape of src/bundled/goose/goose.ts.
-- src/sessions.ts: wraps src/bundled/goose/sessions.ts.
+- src/hermes.ts: the process adapter shape of src/bundled/goose/goose.ts,
+  its steering hook included.
+- src/sessions.ts: wraps src/bundled/goose/sessions.ts, and adapts its
+  SharedProcess.
 - src/index.ts: the agent type and sessions list of
   src/bundled/goose/index.ts.
 - src/views.tsx: the New agent and Settings views of
   src/bundled/goose/tabs.tsx, built from the same buzz-app components.
-- src/activity.tsx, src/history.ts and src/transcript.ts: the Activity tab follows
-  src/bundled/goose/tabs.tsx and src/bundled/goose/transcript.ts.
+- src/activity.tsx: the Activity tab of src/bundled/goose/tabs.tsx, built from
+  the same buzz-app components.
+- src/provider.tsx: the provider dialog and default control of
+  src/bundled/goose/tabs.tsx, built from the same buzz-app components.
+- src/recorder.ts, src/history.ts: shared with this project's other ACP plugin;
+  they write the shape that src/features/agents/activity-transcript.ts reads.
+- src/session-read.ts: reading sessions from the harness, their limits and the
+  first-prompt check follow src/bundled/goose/transcript.ts; shared with this
+  project's other ACP plugin.
+- src/transcript.ts: turns from a replay follow src/bundled/goose/transcript.ts;
+  shared with this project's other ACP plugin.
 - tsconfig.json: the compiler options of buzz-app's tsconfig.json.
-
-The build also bundles react-markdown and remark-gfm, with the unified, micromark
-and mdast libraries they use, for the transcripts. Each is licensed under the
-MIT License (@ungap/structured-clone: ISC).
 
 Hermes Agent is a project of Nous Research. This plugin is not affiliated
 with or endorsed by Nous Research or Block, Inc.

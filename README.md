@@ -28,20 +28,30 @@ flowchart TB
   offers. "Default" keeps the model of your Hermes config.
 - These views use the app's own model picker, instructions field and
   settings rows, so they look as they do for the app's own agents.
-- The Activity tab shows the agent's recent sessions and their transcripts.
-  It reads a session with `hermes acp` in a short-lived process, with the
-  workspace that the session ran in. Hermes stores the folder that a read
-  gives it.
+- You can pick another model for one message, as on the app's own agents.
+  The next message goes back to the agent's model.
+- The agent's settings sync across your devices, and a community's
+  repositories folder reaches the agent, as for the app's own agents.
+- The Activity tab lists the agent's sessions. A transcript shows its prompts,
+  steers, tool calls and replies, with Markdown layout. It reads them from
+  Hermes first, as the app's Goose agents read theirs (see "Activity record").
+- The app's token view shows what each turn used.
+- The app's provider row and dialog show whether Hermes is installed, its
+  version, whether a gateway answers, and its models. "Check again" reads them
+  again. The dialog shows; it never starts a gateway or changes your Hermes
+  setup.
 
 ## Requirements
 
-- The Buzz desktop app, version 0.7.0-preview.240.1 (see "Compatibility").
+- The Buzz desktop app, version 0.7.0-preview.243.1 (see "Compatibility").
 - Hermes Agent 0.22.1 or newer with its ACP extra, on `PATH` as `hermes`.
   `hermes acp --check` must pass.
 - A provider and model set up in Hermes (`hermes setup`).
 - The Hermes gateway must run. Hermes routes ACP sessions through it; with
-  no gateway, a new session fails with "Gateway inaccessible". Start it
-  with `hermes gateway start` (or `hermes gateway run` in a terminal).
+  no gateway, a new session fails with "Gateway inaccessible". Hermes 0.22.3
+  and newer starts the gateway when a session needs it. With an older Hermes,
+  start it with `hermes gateway start` (or `hermes gateway run` in a
+  terminal).
 
 ## Install
 
@@ -58,7 +68,7 @@ The plugin asks for these host grants (`plugin/manifest.json`):
 | --- | --- |
 | Process `hermes acp` | Starts Hermes. No other program and no other arguments. |
 | `mcp` | Serves the Buzz tools to Hermes on a loopback port, with a token. |
-| `files` | Lets the Buzz tools attach files from the agent's workspace. |
+| `files` | Lets the Buzz tools attach files from the agent's workspace, and lets the provider check read the state of the Hermes gateway (`~/.hermes/gateway_state.json`, two fields only). |
 
 ## Settings
 
@@ -71,18 +81,89 @@ The plugin asks for these host grants (`plugin/manifest.json`):
 
 A changed setting opens a new session at the next idle turn.
 
+## Activity record
+
+A transcript reads its session from Hermes first, as the app's Goose agents do.
+A short-lived `hermes acp` process replays the session (`session/load`), with a
+timeout, and stops after the read. It goes on no record, and no text is cut. A
+transcript shows the last 50 turns, says when older turns exist, and joins up
+to 10 sessions of one conversation.
+
+The plugin also writes a record while a turn runs: the messages between the app
+and Hermes, as the app's own agents' transcripts show them. The tab shows the
+record for the session that runs now, which updates live, and for a session
+whose read fails or that Hermes no longer has. A failed read shows an alert
+above the record. A turn read from Hermes takes its times, its end and its
+steers from the record. The app's token view reads only the record.
+
+- It holds **private data**: prompts with chat text and tool calls with what
+  the agent read and wrote.
+- It stays on this computer, in the app's agent storage. The plugin never
+  sends it anywhere and does not write it to a file.
+- It is bounded: the last 50 turns of each conversation, about 1 MB for each
+  agent, with long text cut. The oldest turns go first.
+- It holds no agent key and no MCP token: requests that carry credentials are
+  not recorded.
+- It stays after you remove an agent, until the app deletes its storage.
+- The plugin also logs each session's id, conversation and workspace in the
+  app's local storage, so that the tab can read it. The log holds no chat text.
+
 ## Limits
 
 - Hermes runs tools without approval. The shared ACP client answers each
   permission request with "allow", as it does for Goose. Give the agent a
   workspace you trust it with.
-- Hermes has no thinking-level picker in ACP, so the plugin shows none.
-- Hermes has no system-prompt or steer extension in ACP. The Buzz system
-  prompt goes at the head of the first prompt of a session, and a message
-  that comes during a turn runs as the next turn.
-- Each session gets the Buzz tools. The Hermes gateway, not the plugin,
-  decides which MCP servers from your Hermes config a session also gets.
-  Since Hermes 0.22.1, `HERMES_ACP_SKIP_CONFIGURED_MCP` has no effect.
+- No tool hooks. The app's `beforeTool` and `afterTool` hooks can block or
+  change a tool call, and Hermes offers no ACP path for that. Its hooks are
+  shell hooks and plugins in the Hermes config (`agent/shell_hooks.py`,
+  `hermes_cli/plugins.py`), which the plugin does not change. Over ACP, Hermes
+  only asks permission for some actions and reports tool calls after they
+  start (`acp_adapter/gateway_server.py`).
+- No agent protection. The app enforces a protection policy on the process it
+  starts, and Hermes runs tools in its gateway, outside that process
+  (`acp_adapter/gateway_server.py`: "never constructs an execution owner";
+  `acp_adapter/entry.py`). The app therefore stops a protected Hermes agent
+  and shows this reason.
+- Hermes 0.22.1 has no thinking-level option in ACP, so the plugin shows no
+  picker. Hermes adds the option in 0.22.6. The picker waits for that
+  version.
+- Hermes has no system-prompt extension in ACP. The Buzz system prompt
+  goes at the head of the first prompt of a session.
+- A message that comes during a turn is steered into that turn with
+  Hermes' `/steer` command. Hermes sends no run id, so the plugin makes one
+  for each turn that runs, and it drops Hermes' "Steer queued" reply
+  (`src/hermes.ts`, `HermesWire`). Hermes gives the guidance to the model
+  before its next model call. A steer that Hermes cannot take, or that
+  fails, runs as the next turn.
+- The app's Compact action runs Hermes' `/compress`. Hermes then reports
+  how many messages it removed. When its summary fails (aborted, refused,
+  or a fallback), the action fails and shows Hermes' own words.
+- Hermes frees its sessions only when the `hermes acp` process ends. It
+  ignores `session/close`. So the plugin stops the process when no turn
+  runs and either it has had no traffic for 30 minutes, or it has opened
+  more than 64 sessions and has had no traffic for one minute. The process
+  starts again with the next message, and that conversation continues in a
+  new session that is shown the thread again (`src/sessions.ts`). A message
+  that reaches an open session in the moment the process stops fails, and
+  the app shows the error.
+- Each session gets the Buzz tools and also the MCP servers from your Hermes
+  config. The Hermes gateway attaches those servers, not the plugin. Since
+  Hermes 0.22.1, `HERMES_ACP_SKIP_CONFIGURED_MCP` has no effect. To keep your
+  servers out of ACP sessions, set this in the `config.yaml` of the Hermes
+  profile that the plugin uses:
+
+  ```yaml
+  platform_toolsets:
+    acp:
+      - hermes-acp
+      - no_mcp
+  ```
+
+  To allow only some servers, put their names in the list in place of
+  `no_mcp`. This setting applies to all ACP sessions of that profile, not
+  only to Buzz. Restart the gateway after the change. Then do the smoke run,
+  which proves that Hermes still reaches the Buzz tools. The plugin never
+  changes your Hermes config.
 - Hermes 0.22.1 does not advertise HTTP MCP in its ACP `initialize` answer,
   but it accepts HTTP MCP servers. The plugin adds the missing flag to that
   one answer (`src/hermes.ts`, `hermesSpawn`). The smoke run proves that
@@ -92,38 +173,69 @@ A changed setting opens a new session at the next idle turn.
   asks the host for a shared MCP session, so each client that has the token
   can connect (`src/index.ts`, `sharedMcpHost`). The token stays on loopback,
   and it is valid only for one session. Hermes keeps it only in memory.
-- The Activity tab lists only sessions that ran after this version was
-  installed: the plugin logs them, in this app's local storage. Hermes's ACP
-  replay has no times and no turn ends, so a transcript shows no dates, and
-  its turns show "Status unknown". A conversation shows as a short id, because
-  the plugin API does not give channel names to this tab.
+- The Activity tab reads only logged sessions, in the workspace the log names,
+  because `session/load` moves a session to the folder it gets
+  (`acp_adapter/gateway_server.py`). A recorded session with no log row shows
+  from the record, where long text is cut and older turns drop out.
+- The tab does not add sessions from Hermes' session list, as Goose does. To
+  check a session's first prompt, it must load the session, and the list names
+  only sessions that came through ACP. So a session from before the log, and
+  not on the record, does not show.
+- A read is a gateway client, as a turn is. If the read fails, the record shows.
+- A turn from Hermes that is not on the record has no times, no end state and
+  no usage. A recorded steer that a replay does not hold shows with its record
+  text, which starts with "Note:".
+- A session with no title shows as a short id, because the plugin API does not
+  give channel names to this tab. Setup checks are not on the record.
 - An open transcript replaces the Activity tab's content, with a back button.
   The app's own agents open it in a panel tab. The plugin API does not give
   that part of the app to plugins.
-- No synced settings: this is an app module, not plugin API.
+- Hermes reports a session's running token totals, so the plugin reports the
+  difference for each turn (`src/hermes.ts`, `turnUsage`). A process that
+  starts again, or a compress that made the session smaller, starts a new
+  count. If the new total is already above the old one, that turn shows less
+  than it used. The usage of a steer that Hermes ran as its own turn shows on
+  the next turn.
+- The token view shows no cost: Hermes reports none over ACP.
+- The provider row asks you to start a gateway when none runs, but Hermes
+  0.22.3 and newer can start one for a turn. If `HERMES_HOME` moves the Hermes
+  folder, the row reads the gateway state as not known. Lists of models come
+  from a session, and that session can make Hermes start a gateway, so the
+  check opens one only when a gateway already runs. The New agent dialog and
+  the Settings tab do not have this guard.
+- An agent cannot set a static WebP picture that needs a pixel change. The app
+  does that work in a web worker, and an installed plugin is one file. The tool
+  tells the agent to use a PNG or JPEG. PNG, JPEG and GIF work.
 - The Settings tab does not warn about unsaved changes when you leave it.
   The plugin API does not give that part of the app to plugins.
+
+## Supply chain
+
+Every package in the bundle and in the build comes from this repository's
+lockfile. The release-age guard in `pnpm-workspace.yaml` and the pre-push
+dependency scan judge that lockfile, so they cover the whole build. The buzz-app
+clone gives source only and has no install of its own.
 
 ## Compatibility
 
 The plugin bundles modules of the Buzz app at one revision
 (`BUZZ_APP_REV` in `scripts/build-plugin.mjs`):
-`0b2dfbf9889ea95873f175b216fbb0b5795f104e`, the revision
-of Buzz Desktop 0.7.0-preview.240.1. A new app release can change these
+`56729773f48d3f922a043ac83b7faa727bcfc9c2`, the revision
+of Buzz Desktop 0.7.0-preview.243.1. A new app release can change these
 modules. Before you use the plugin with a newer app, move the pin to that
 release, then build and run `scripts/check`.
 
 ## Build
 
-You need Node.js 24 or newer and a buzz-app clone at the pinned revision.
-The build uses the clone's Vite and TypeScript. This repository installs no
-packages of its own.
+You need Node.js 24 or newer, pnpm and a buzz-app clone at the pinned revision.
+The clone needs no install: the build uses this repository's Vite, TypeScript
+and Biome.
 
 ```sh
 git clone https://github.com/block/buzz-app.git <clone>
-git -C <clone> checkout 0b2dfbf9889ea95873f175b216fbb0b5795f104e
-(cd <clone> && bin/pnpm install --frozen-lockfile --ignore-scripts)
+git -C <clone> checkout 56729773f48d3f922a043ac83b7faa727bcfc9c2
 scripts/link-toolchain <clone>      # makes the gitignored buzz-app link
+pnpm install --frozen-lockfile --ignore-scripts
 node scripts/build-plugin.mjs       # type check, then dist/
 ```
 
@@ -143,10 +255,18 @@ Run `scripts/setup-hooks` once after you clone. Install the tools in
 - `scripts/check`: all of the above, then Markdown lint, complexity,
   semgrep, trivy, the build and the smoke run. The pre-push hook runs it on
   each pushed commit.
-- `node smoke/run.mjs`: loads the built plugin outside the app, with real
-  `hermes acp`. It reads the models, then runs one turn that must answer
-  through the Buzz `send` tool. `--model <id>` also proves the model
-  switch. `--skip-turn` makes no model call.
+- `node smoke/run.mjs`: loads the built plugin outside the app. It first
+  runs against a stand-in process (`smoke/stub.mjs`), for what real Hermes
+  cannot show on demand: chosen token totals, a steer that comes too late, a
+  missing program or gateway, a session read that fails. Then it uses real
+  `hermes acp`. It reads the models and the provider dialog, then runs one turn
+  that must answer through the Buzz `send` tool, and reads that turn's Activity
+  record, its read from Hermes and its usage.
+  `--model <id>` also proves the model switch. `--skip-turn` makes no model
+  call. `--stub-only` uses only the stand-in. `--controls` also steers a
+  running turn and compacts its session. It makes more model calls, so
+  `scripts/check` does not use it. Run it once after you change the steering
+  or compaction code, and on each new Hermes version.
 
 The smoke run uses your own Hermes setup, so it makes one short model call
 on your provider. It writes only to a temporary folder and publishes
