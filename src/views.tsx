@@ -35,6 +35,9 @@ const RESET_LABEL = "Use Hermes default";
 const CREATE_MODEL_LABEL = "Hermes model";
 /** The harness mark beside the model on a library card, as Goose sizes it. */
 const CARD_ICON_SIZE = 18;
+/** Lets the Create row's picker shrink below its text, so that its value
+ * ellipsizes. The picker's own wrappers would keep it at full width. */
+const CREATE_ROW_BOUND = { gridTemplateColumns: "minmax(0, 1fr)" };
 /** A workspace is an absolute path or one in the home folder. */
 const WORKSPACE_RE = /^(\/|~\/|~$)/;
 const SCOPES = [
@@ -124,7 +127,7 @@ export function createViews(setup: HermesSetup) {
   }: AgentCreateProps<Config>) {
     const current = readConfig(config);
     const { list, retry, choices } = useChoices();
-    return (
+    const picker = (
       <ModelDiscoveryRecovery
         error={list.status === "error" ? list.error : undefined}
         loading={list.status === "loading"}
@@ -151,6 +154,19 @@ export function createViews(setup: HermesSetup) {
           onChange={(model) => onChange({ ...current, model })}
         />
       </ModelDiscoveryRecovery>
+    );
+    if (modelAppearance) return picker;
+    // The row limits a long value to 60% of its width only when a compact
+    // choice is its direct child. Hermes' labels can be long enough that,
+    // without this, the value takes the full row and the title has no width.
+    return (
+      <div
+        className="buzz-select"
+        data-variant="compact"
+        style={CREATE_ROW_BOUND}
+      >
+        {picker}
+      </div>
     );
   }
 
