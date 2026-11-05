@@ -21,7 +21,8 @@
 # packages installed (README, "Build"): BUZZ_APP_DIR, else the clone this
 # checkout's buzz-app link points to. Its smoke run needs Hermes Agent set up
 # on this computer, with its gateway running (README, "Requirements"); it
-# makes one short model call with the user's own Hermes setup.
+# makes one short model call on the Z AI coding plan, and stops with no call
+# if Hermes would use another provider (README, "Development").
 #
 # Every check fails closed: a missing tool, a tool error or a finding exits 1.
 # A check whose input is absent from DIR (an older commit) is skipped, because
@@ -50,9 +51,10 @@ BIOME_CONFIG=biome.json
 MANIFEST_ID_RE='^[a-z][a-z0-9.-]{0,79}$'
 MANIFEST_DESCRIPTION_MAX_BYTES=280
 MANIFEST_API_VERSION=1
-# The one host grant the plugin may hold: `hermes acp` as its only process,
-# with MCP serving and file reads for the Buzz tools. Anything wider fails.
-MANIFEST_HOST_JSON='{"processes":[{"id":"hermes","program":"hermes","args":["acp"]}],"mcp":true,"files":true}'
+# The one host grant the plugin may hold: `hermes acp`, the owner's read of the
+# session store for token use, and MCP serving and file reads for the Buzz tools.
+# Anything wider fails.
+MANIFEST_HOST_JSON='{"processes":[{"id":"hermes","program":"hermes","args":["acp"]},{"id":"hermes-usage","program":"hermes","args":["sessions","export","--format","jsonl","--source","local","--newer-than","30d","-"]}],"mcp":true,"files":true}'
 # Complexity limits match the generic changed-function check, applied here
 # to every function so old code cannot drift past them unnoticed.
 LIZARD_MAX_CCN=15
@@ -64,6 +66,11 @@ BUILD_TIMEOUT_SECONDS=600
 PNPM_INSTALL_TIMEOUT_SECONDS=300
 PNPM_MIN_VERSION=12.4.2
 SMOKE_TIMEOUT_SECONDS=600
+# The one model a hook run may call. A session starts on Hermes' default, so the
+# smoke proves this route first. The bare id is the one that changes provider.
+SMOKE_MODEL=glm-5.3-flash
+SMOKE_ROUTE=zai:glm-5.3-flash
+SMOKE_EFFORT=max
 SEMGREP_REGISTRY_CONFIG=p/javascript
 # Minimum versions: the releases these flags and rule sets were verified with.
 NODE_MIN_VERSION=24.0.0
@@ -278,7 +285,8 @@ check_plugin() {
 	BUZZ_APP_DIR="$clone" run_with_timeout "$BUILD_TIMEOUT_SECONDS" node "$BUILD_PLUGIN" --out "$tmp/plugin" ||
 		fail "the plugin does not type check or build"
 	has_file "$SMOKE" || return 0
-	run_with_timeout "$SMOKE_TIMEOUT_SECONDS" node "$SMOKE" --plugin "$tmp/plugin" ||
+	run_with_timeout "$SMOKE_TIMEOUT_SECONDS" node "$SMOKE" --plugin "$tmp/plugin" \
+		--model "$SMOKE_MODEL" --route "$SMOKE_ROUTE" --effort "$SMOKE_EFFORT" ||
 		fail "smoke run failed (Hermes set up and its gateway running? README, Requirements)"
 }
 

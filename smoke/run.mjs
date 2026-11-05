@@ -22,11 +22,16 @@
 // totals, and how the provider row and dialog read a missing program or gateway.
 // Those checks call no model.
 //
-// Usage: node smoke/run.mjs [--plugin <dir>] [--model <id>] [--skip-turn]
-//                           [--controls] [--stub-only]
+// Usage: node smoke/run.mjs [--plugin <dir>] [--model <id>] [--route <id>]
+//                           [--effort <level>] [--skip-turn] [--controls]
+//                           [--stub-only]
 //   --plugin <dir>  the built plugin directory (default: dist/)
 //   --model <id>    run the turn on this listed model, which proves the model
 //                   switch (default: the model Hermes' config picks)
+//   --route <id>    the `provider:model` id --model must reach. The run stops
+//                   with no model call on another route, and refuses any prompt
+//                   before that session's switch
+//   --effort <level> the effort Hermes' config must set for --model
 //   --skip-turn     only check model discovery (no model call)
 //   --controls      after the turn, steer a running turn and compact its
 //                   session. More model calls and a slower run, so it is not
@@ -108,8 +113,14 @@ const BACK_BUTTON = 'button[aria-label="Back to profile"]';
 const VIEW_BUTTON = 'button[aria-label^="View transcript"]';
 /** The gateway's state file, as the plugin asks the host for it. */
 const GATEWAY_STATE_PATH = "~/.hermes/gateway_state.json";
+/** Hermes' config, the only place that sets a model's effort. */
+const HERMES_CONFIG_PATH = "~/.hermes/config.yaml";
+/** Bounds the route check, which starts a session but calls no model. */
+const ROUTE_TIMEOUT_MS = 120_000;
 /** Older than Hermes' own bound on that file's stamp. */
 const STALE_STATE_MS = 10 * 60_000;
+/** The manifest's id of the `hermes acp` process. */
+const HERMES_PROCESS = "hermes";
 /** Hermes' words when a session finds no gateway. */
 const GATEWAY_REFUSAL = "Gateway inaccessible: authorization";
 const CHECK_AGAIN = "Check again";
@@ -149,6 +160,8 @@ function parseArgs(argv) {
     controls: false,
     stubOnly: false,
     model: undefined,
+    route: undefined,
+    effort: undefined,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -167,9 +180,18 @@ function parseArgs(argv) {
         throw new SmokeError("--model needs a model id", { exit: EXIT_USAGE });
       options.model = argv[i + 1];
       i += 1;
+    } else if (arg === "--route" || arg === "--effort") {
+      if (!argv[i + 1])
+        throw new SmokeError(`${arg} needs a value`, { exit: EXIT_USAGE });
+      options[arg.slice(2)] = argv[i + 1];
+      i += 1;
     } else
       throw new SmokeError(`unknown argument: ${arg}`, { exit: EXIT_USAGE });
   }
+  if ((options.route || options.effort) && !options.model)
+    throw new SmokeError("--route and --effort need --model", {
+      exit: EXIT_USAGE,
+    });
   return options;
 }
 
@@ -199,7 +221,7 @@ function deadline(promise, ms, what) {
 
 /** The desktop host's process grant, as the app enforces it: only the
  * manifest's processes, only with the arguments it declares. */
-function processHost(manifest, children, methods, stdout, prompts) {
+function processHost(manifest, children, methods, stdout, prompts, guard) {
   const declared = new Map(
     manifest.host.processes.map((entry) => [entry.id, entry]),
   );
@@ -233,6 +255,7 @@ function processHost(manifest, children, methods, stdout, prompts) {
     child.stdout.on("data", (data) => {
       // Hermes' answers, to read its model list as the picker got it.
       stdout.push(data);
+      guard?.answered(data);
       options.onStdout?.(data);
     });
     child.stderr.on("data", (data) => options.onStderr?.(data));
@@ -249,6 +272,13 @@ function processHost(manifest, children, methods, stdout, prompts) {
     });
     // The ACP methods the plugin calls, as evidence of what the turn did.
     const write = (data) => {
+      try {
+        guard?.written(data);
+      } catch (error) {
+        return stop(child, exited).then(() => {
+          throw error;
+        });
+      }
       for (const [, method] of String(data).matchAll(METHOD_RE))
         methods.push(method);
       prompts.push(...promptTexts(data));
@@ -266,6 +296,138 @@ function processHost(manifest, children, methods, stdout, prompts) {
       exited,
     });
   };
+}
+
+/**
+ * Stops a prompt from leaving unless its session switched to the routed model.
+ *
+ * Why here: a session starts on Hermes' default provider, so one prompt sent
+ * before a switch, or after a refused one, spends on the wrong plan. Only the
+ * process boundary sees every prompt the plugin writes, whichever path sent it.
+ */
+function routeGuard(model) {
+  const pending = new Map();
+  const switched = new Set();
+  let partial = "";
+  return {
+    /** Throws for a prompt whose session did not switch; it is never written. */
+    written(data) {
+      for (const line of String(data).split("\n").filter(Boolean)) {
+        const { id, method, params } = JSON.parse(line);
+        if (method === "session/set_model" && params?.modelId === model)
+          pending.set(id, params.sessionId);
+        if (method === "session/prompt" && !switched.has(params?.sessionId))
+          throw new SmokeError(
+            `a prompt without the switch to ${model}: refused, so no model call`,
+          );
+      }
+    },
+    /** Lines can split across chunks, so an answer is read only when whole. */
+    answered(data) {
+      const lines = (partial + data).split("\n");
+      partial = lines.pop();
+      for (const line of lines) {
+        const answer = parseJsonLine(line);
+        if (pending.has(answer?.id) && answer.result)
+          switched.add(pending.get(answer.id));
+        if (answer) pending.delete(answer.id);
+      }
+    },
+  };
+}
+
+/** One line of Hermes' output as JSON, or null: it can also print plain text. */
+function parseJsonLine(line) {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
+}
+
+/** Sends one request to a Hermes process and waits for its answer. */
+function acpRequest(child, state, method, params) {
+  state.next += 1;
+  const id = state.next;
+  return new Promise((done, fail) => {
+    state.waiting.set(id, { done, fail });
+    child.stdin.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`,
+    );
+  });
+}
+
+/**
+ * Proves on the real gateway where the switch goes, and sends no prompt.
+ *
+ * Why: Hermes answers success for an id that stays on the default provider. It
+ * reads `zai:<model>` as a model name on that provider, so only the session's
+ * current model after the switch shows the route. A wrong route stops the run
+ * before the plugin starts its turn.
+ */
+async function checkRoute(entry, model, route) {
+  const child = spawn(entry.program, entry.args, {
+    cwd: tmpdir(),
+    stdio: ["pipe", "pipe", "ignore"],
+  });
+  const exited = new Promise((done) => child.on("exit", done));
+  const state = { next: 0, waiting: new Map(), partial: "" };
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (data) => {
+    const lines = (state.partial + data).split("\n");
+    state.partial = lines.pop();
+    for (const answer of lines.map(parseJsonLine)) {
+      const waiter = state.waiting.get(answer?.id);
+      if (!waiter) continue;
+      if (answer.error)
+        waiter.fail(new SmokeError(JSON.stringify(answer.error)));
+      else waiter.done(answer.result);
+    }
+  });
+  const timer = setTimeout(() => child.kill("SIGKILL"), ROUTE_TIMEOUT_MS);
+  const closed = exited.then(() => {
+    throw new SmokeError(`Hermes stopped before the route check of ${route}`);
+  });
+  const call = (method, params) =>
+    Promise.race([acpRequest(child, state, method, params), closed]);
+  try {
+    await call("initialize", { protocolVersion: 1, clientCapabilities: {} });
+    const made = await call("session/new", { cwd: tmpdir(), mcpServers: [] });
+    const session = { sessionId: made.sessionId };
+    await call("session/set_model", { ...session, modelId: model });
+    const after = await call("session/resume", {
+      ...session,
+      cwd: tmpdir(),
+      mcpServers: [],
+    });
+    const current = after.models?.currentModelId;
+    if (current !== route)
+      throw new SmokeError(`model ${model} routes to ${current}, not ${route}`);
+    log("route", `${model} routes to ${current}, with no model call`);
+  } finally {
+    clearTimeout(timer);
+    closed.catch(() => {});
+    await stop(child, exited);
+  }
+}
+
+/**
+ * Proves Hermes' config sets the effort this run asks for.
+ *
+ * Why: ACP has no effort setting, and Hermes silently uses its global effort
+ * for a model with no override, so a run could pass at the wrong effort.
+ */
+function checkEffort(model, effort) {
+  const config = readFileSync(expand(HERMES_CONFIG_PATH), "utf8");
+  if (
+    !new RegExp(
+      `^\\s+${model.replaceAll(".", "\\.")}:\\s*${effort}\\s*$`,
+      "m",
+    ).test(config)
+  )
+    throw new SmokeError(
+      `Hermes' config has no agent.reasoning_overrides line ${model}: ${effort}`,
+    );
 }
 
 /** The text of each `session/prompt` in what the plugin writes to Hermes. */
@@ -634,7 +796,7 @@ function promptAnswers(stdout) {
 
 /** The real turn's use, as the app's usage reads it: real tokens, and no cost,
  * as Hermes reports none. */
-async function checkLiveUsage(type, agent, sessionId, model, stdout) {
+async function checkLiveUsage(type, agent, sessionId, model, stdout, pinned) {
   const read = await type.usage(agent, {
     since: 0,
     signal: new AbortController().signal,
@@ -647,6 +809,9 @@ async function checkLiveUsage(type, agent, sessionId, model, stdout) {
     );
   if ("cost" in seen)
     throw new SmokeError(`a cost nobody reported: ${JSON.stringify(seen)}`);
+  // Hermes' fallback providers can answer after the switch; only this shows it.
+  if (pinned && seen.model !== model)
+    throw new SmokeError(`the turn ran on ${seen.model}, not ${model}`);
   log(
     "usage",
     `${session.observations.length} observation(s), model ${seen.model} (asked ${model}), tokens ${JSON.stringify(seen.tokens)}`,
@@ -1615,7 +1780,14 @@ async function main() {
     react: app.react,
     effect: (setup) => cleanups.push(setup()),
     host: {
-      spawn: processHost(manifest, children, methods, stdout, prompts),
+      spawn: processHost(
+        manifest,
+        children,
+        methods,
+        stdout,
+        prompts,
+        options.route ? routeGuard(options.model) : undefined,
+      ),
       serveMcp: mcpHost(servers),
       resolveDirectory: async (path) => {
         const dir = expand(path);
@@ -1658,11 +1830,16 @@ async function main() {
     await checkNativeParity(type, agent, discovery);
     await checkLiveProvider(app, type);
     if (!options.turn) return;
-    if (
-      options.model &&
-      !discovery.models.some((entry) => entry.id === options.model)
-    )
-      throw new SmokeError(`Hermes does not list the model ${options.model}`);
+    const listed = options.route ?? options.model;
+    if (listed && !discovery.models.some((entry) => entry.id === listed))
+      throw new SmokeError(`Hermes does not list the model ${listed}`);
+    if (options.effort) checkEffort(options.model, options.effort);
+    if (options.route)
+      await checkRoute(
+        manifest.host.processes.find((entry) => entry.id === HERMES_PROCESS),
+        options.model,
+        options.route,
+      );
     const model = options.model ?? discovery.current ?? discovery.models[0].id;
     // A model is an agent setting, which the app hands the runtime as a
     // changed agent, as when the owner saves it.
@@ -1684,7 +1861,14 @@ async function main() {
     );
     const sessionId = checkLiveActivity(type, agent, liveStorage, sent);
     await checkLiveRead({ type, agent }, sent.channel, sent.nonce);
-    await checkLiveUsage(type, agent, sessionId, model, stdout);
+    await checkLiveUsage(
+      type,
+      agent,
+      sessionId,
+      model,
+      stdout,
+      Boolean(options.route),
+    );
     if (options.controls)
       await controls(type, agent, handle, {
         published,

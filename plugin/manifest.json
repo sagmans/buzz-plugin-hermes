@@ -8,7 +8,24 @@
     "tags": ["code", "coding-agents", "Hermes"]
   },
   "host": {
-    "processes": [{ "id": "hermes", "program": "hermes", "args": ["acp"] }],
+    "processes": [
+      { "id": "hermes", "program": "hermes", "args": ["acp"] },
+      {
+        "id": "hermes-usage",
+        "program": "hermes",
+        "args": [
+          "sessions",
+          "export",
+          "--format",
+          "jsonl",
+          "--source",
+          "local",
+          "--newer-than",
+          "30d",
+          "-"
+        ]
+      }
+    ],
     "mcp": true,
     "files": true
   }

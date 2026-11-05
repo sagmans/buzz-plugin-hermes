@@ -276,15 +276,29 @@ Run `scripts/setup-hooks` once after you clone. Install the tools in
   `hermes acp`. It reads the models and the provider dialog, then runs one turn
   that must answer through the Buzz `send` tool, and reads that turn's Activity
   record, its read from Hermes and its usage.
-  `--model <id>` also proves the model switch. `--skip-turn` makes no model
+  `--model <id>` also proves the model switch. `--route <id>` names the
+  `provider:model` that switch must reach: the run checks it with no model
+  call, and refuses a prompt before that session's switch. `--effort <level>`
+  requires that effort in Hermes' config. `--skip-turn` makes no model
   call. `--stub-only` uses only the stand-in. `--controls` also steers a
   running turn and compacts its session. It makes more model calls, so
   `scripts/check` does not use it. Run it once after you change the steering
   or compaction code, and on each new Hermes version.
 
-The smoke run uses your own Hermes setup, so it makes one short model call
-on your provider. It writes only to a temporary folder and publishes
-nothing: its agent handle keeps events in memory.
+`scripts/check` runs the smoke on `glm-5.3-flash` through the Z AI coding plan,
+at effort `max`. It makes one short turn and Hermes' title call. Hermes must
+have a Z AI key, a coding plan `GLM_BASE_URL`, and this line in its config:
+
+```yaml
+agent:
+  reasoning_overrides:
+    glm-5.3-flash: max
+```
+
+The title call uses effort `low`, which Hermes sets. If Flash fails, Hermes can
+try its `fallback_providers`; the smoke then fails on the usage check, after
+that call. The smoke writes only to a temporary folder and publishes nothing:
+its agent handle keeps events in memory. Its sessions stay in Hermes' store.
 
 Never use `--no-verify`.
 
