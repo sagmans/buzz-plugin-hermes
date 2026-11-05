@@ -26,6 +26,7 @@ import { bindReact } from "./react-host";
 import { ActivityRecorder } from "./recorder";
 import { ActivitySessions, HarnessReader, SessionLog } from "./session-read";
 import { HermesSetup } from "./setup";
+import { StoreUsage } from "./session-usage";
 import { recordedSpawn } from "./steer-record";
 import { createViews } from "./views";
 
@@ -133,7 +134,13 @@ export function apply(ctx: Context) {
     recorder,
     sessions,
   });
-  agents.register<Config>(hermesType(runtime, setup, ActivityTab, history));
+  const stored = new StoreUsage({
+    spawn: host.spawn.bind(host),
+    resolveDirectory: host.resolveDirectory.bind(host),
+  });
+  agents.register<Config>(
+    hermesType(runtime, setup, ActivityTab, history, stored),
+  );
 }
 
 /** The host the runtime serves Buzz tools through, with every MCP server in
@@ -160,6 +167,7 @@ function hermesType(
   setup: HermesSetup,
   ActivityTab: ReturnType<typeof createActivity>["ActivityTab"],
   history: RecordedHistory,
+  stored: StoreUsage,
 ): AgentType<Config> {
   const { Create, CreateModel, SettingsTab } = createViews(setup);
   return {
@@ -216,9 +224,9 @@ function hermesType(
       },
     ],
     provider: createProvider(setup),
-    // No cost: Hermes reports none over ACP (its `usage_update` has only the
-    // context size), and this plugin invents none.
-    usage: (agent, options) => history.usage(agent.key, options),
+    // The record gives each turn's use and time; Hermes' store gives the rest.
+    usage: async (agent, options) =>
+      stored.usage(agent.key, await history.usage(agent.key, options), options),
     // Per-message picks, as the native type offers them.
     models: (agent) => setup.picks(config(agent.config)),
     ...gooseRun(runtime),

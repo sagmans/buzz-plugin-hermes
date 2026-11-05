@@ -86,6 +86,10 @@ const DOM_GLOBALS = [
   "MutationObserver",
   "matchMedia",
 ];
+/** When a stored session of the stand-in started, in Hermes' seconds. */
+const STORE_STARTED_S = 1_790_000_000;
+/** A later message of a stored session, which no read may keep. */
+const STORE_PRIVATE = "words-of-a-stored-message";
 const AGENT_NAME = "HermesSmoke";
 /** How the bundle carries the Settings icon: one file, no asset to load. */
 const ICON_DATA_URL = "data:image/png;base64,";
@@ -1460,6 +1464,122 @@ async function checkStubUsage(stub, loaded) {
   log("stub-usage", `per-turn ${seen}; after a recycle ${rowsOf(after)}`);
 }
 
+/** A row of `hermes sessions export`. Its later message is words the read must
+ * not keep. */
+function storedRow(id, opening, fields = {}) {
+  return {
+    id,
+    source: "local",
+    parent_session_id: null,
+    started_at: STORE_STARTED_S,
+    ended_at: STORE_STARTED_S + 1,
+    last_activity_at: STORE_STARTED_S + 1,
+    end_reason: "acp_disconnect",
+    model: STUB_MODEL,
+    input_tokens: 100,
+    output_tokens: 10,
+    cache_read_tokens: 5,
+    cache_write_tokens: 0,
+    reasoning_tokens: 3,
+    estimated_cost_usd: 0,
+    actual_cost_usd: null,
+    cost_status: "unknown",
+    messages: [
+      { role: "user", content: opening },
+      { role: "assistant", content: STORE_PRIVATE },
+    ],
+    ...fields,
+  };
+}
+
+/** What Hermes' store adds to the record: sessions the record never saw, the part
+ * of a total it did not measure, and only for the agent they belong to. */
+async function checkStoreUsage(stub, loaded) {
+  const { type, agent } = loaded;
+  const read = (since = 0) =>
+    type.usage(agent, { since, signal: new AbortController().signal });
+  const opening = (key) =>
+    `The system prompt.\n<context>\nAgent: ${key}\nChannel: store (#store)\n</context>\nA message.`;
+  const ours = opening(agent.key);
+
+  stub.storeAnswer = "Error: a session is too large\n";
+  const refused = await read().catch((error) => error);
+  if (refused?.name !== "HermesUsageError")
+    throw new SmokeError(
+      `a failed read with nothing to show: ${JSON.stringify(refused)}`,
+    );
+
+  await plannedTurn(stub, loaded, randomUUID(), totals(60, 6));
+  const recorded = `stub-session-${stub.opened}`;
+  const partial = (await read()).find((item) => item.id === recorded);
+  if (partial?.gaps.length !== 1 || partial.observations.length !== 1)
+    throw new SmokeError(`a failed read: ${JSON.stringify(partial)}`);
+
+  stub.storeAnswer = undefined;
+  stub.store = [
+    // The turn's own row names no agent: its record proves whose it is.
+    storedRow(recorded, "A prompt with no context.", {
+      cost_status: "estimated",
+      estimated_cost_usd: 1.5,
+    }),
+    storedRow("old", ours, { cost_status: "estimated", estimated_cost_usd: 2 }),
+    storedRow("no-price", ours),
+    storedRow("idle", ours, {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+    }),
+    storedRow("chain", ours, { end_reason: "compression" }),
+    storedRow("chain-tip", "The handoff.", {
+      parent_session_id: "chain",
+      started_at: STORE_STARTED_S + 2,
+      last_activity_at: STORE_STARTED_S + 3,
+    }),
+    storedRow("other", opening("someone-else")),
+    storedRow("owner", "A prompt in the owner's terminal."),
+  ];
+  const before = stub.exports;
+  const [sessions] = await Promise.all([read(), read()]);
+  await read();
+  if (stub.exports !== before + 1)
+    throw new SmokeError(`exports for 3 reads: ${stub.exports - before}`);
+  if (JSON.stringify(sessions).includes(STORE_PRIVATE))
+    throw new SmokeError("the read kept a message's words");
+  const found = (id) => sessions.find((item) => item.id === id);
+  for (const id of ["idle", "chain-tip", "other", "owner"])
+    if (found(id)) throw new SmokeError(`session ${id} is listed`);
+
+  const both = found(recorded);
+  const [turn, rest] = both?.observations ?? [];
+  if (
+    both?.gaps.length ||
+    both?.observations.length !== 2 ||
+    turn.tokens.input !== 60 ||
+    rest.tokens.input !== 40 ||
+    rest.tokens.output !== 4 ||
+    rest.tokens.cacheRead !== 5 ||
+    "cost" in turn ||
+    "cost" in rest
+  )
+    throw new SmokeError(`record and store: ${JSON.stringify(both)}`);
+
+  const [old] = found("old")?.observations ?? [];
+  if (old?.cost?.usd !== 2 || old.at !== (STORE_STARTED_S + 1) * 1000)
+    throw new SmokeError(`an older session: ${JSON.stringify(found("old"))}`);
+  if ("cost" in (found("no-price")?.observations[0] ?? { cost: 0 }))
+    throw new SmokeError("a cost Hermes does not know");
+  if (found("chain")?.observations.length !== 2)
+    throw new SmokeError(`a chain: ${JSON.stringify(found("chain"))}`);
+
+  const later = (await read((STORE_STARTED_S + 2) * 1000)).map(({ id }) => id);
+  if (later.includes("old") || !later.includes("chain"))
+    throw new SmokeError(`since: ${later}`);
+  const revision = (await read()).find(({ id }) => id === "old")?.revision;
+  if (revision !== found("old").revision)
+    throw new SmokeError("the revision changed with no new usage");
+  log("store-usage", `${sessions.length} sessions, ${stub.exports} exports`);
+}
+
 /** The dialog's text, drawn by real React, with what its check found. */
 async function providerDialog(app, provider) {
   const container = document.createElement("div");
@@ -1733,6 +1853,20 @@ async function stubChecks(options, manifest, app) {
   } finally {
     await usage.close();
     metered.exitAll();
+  }
+  const storing = new StubHermes();
+  const store = await loadPlugin(
+    options,
+    manifest,
+    app,
+    storing.spawn,
+    "store",
+  );
+  try {
+    await checkStoreUsage(storing, store);
+  } finally {
+    await store.close();
+    storing.exitAll();
   }
   await checkStubProvider(options, manifest, app);
 }

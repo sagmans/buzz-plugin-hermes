@@ -10,6 +10,13 @@ export const OTHER_MODEL = "stub:other";
 /** What the host's spawn says for a program it cannot find (host_process.rs). */
 const NOT_FOUND = "No such file or directory (os error 2)";
 const STEER_COMMAND = "/steer ";
+/** The manifest's id of `hermes sessions export`. */
+const USAGE_PROCESS = "hermes-usage";
+/** What Hermes writes when it has no session to export (sessions_cmd.py). */
+const NO_SESSIONS = "No sessions found.\n";
+/** Cuts an export's output here, so a line reaches the plugin in two pieces, as
+ * a pipe gives a long line. */
+const EXPORT_PIECE_CHARS = 64;
 const COMPRESS_COMMAND = "/compress";
 /** Hermes' first line for a compress that made the session smaller. */
 export const COMPRESSED = "Compressed: 20 → 10 messages";
@@ -63,8 +70,45 @@ export class StubHermes {
   /** Every session a `session/load` asked for. */
   loads = [];
 
-  spawn = async (_id, options = {}) => {
+  /** The rows `hermes sessions export` gives. */
+  store = [];
+  /** Set: what it writes in place of rows, with exit code 0, as Hermes does for
+   * "Error: …". */
+  storeAnswer = undefined;
+  /** How many exports ran. */
+  exports = 0;
+
+  /** One `hermes sessions export`: its output in pieces, then its exit. */
+  export(options) {
+    if (options.args)
+      throw new Error(`arguments beyond the grant: ${options.args}`);
+    this.exports += 1;
+    const answer =
+      this.storeAnswer ??
+      (this.store.length
+        ? this.store.map((row) => `${JSON.stringify(row)}\n`).join("")
+        : NO_SESSIONS);
+    const pieces = [];
+    for (let at = 0; at < answer.length; at += EXPORT_PIECE_CHARS)
+      pieces.push(answer.slice(at, at + EXPORT_PIECE_CHARS));
+    const exited = (async () => {
+      for (const piece of pieces) {
+        await new Promise((done) => setImmediate(done));
+        options.onStdout?.(piece);
+      }
+      return 0;
+    })();
+    return {
+      write: async () => undefined,
+      end: async () => undefined,
+      kill: async () => undefined,
+      exited,
+    };
+  }
+
+  spawn = async (id, options = {}) => {
     if (this.missing) throw new Error(NOT_FOUND);
+    if (id === USAGE_PROCESS) return this.export(options);
     this.started += 1;
     let finish;
     const exited = new Promise((done) => {

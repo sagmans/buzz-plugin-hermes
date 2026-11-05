@@ -67,6 +67,7 @@ The plugin asks for these host grants (`plugin/manifest.json`):
 | Grant | Why |
 | --- | --- |
 | Process `hermes acp` | Starts Hermes. No other program and no other arguments. |
+| Process `hermes sessions export --format jsonl --source local --newer-than 30d -` | Reads token use from Hermes' store for the usage view. It writes no session. The plugin keeps numbers and the first prompt's place, and drops the transcripts in the answer. |
 | `mcp` | Serves the Buzz tools to Hermes on a loopback port, with a token. |
 | `files` | Lets the Buzz tools attach files from the agent's workspace, and lets the provider check read the state of the Hermes gateway (`~/.hermes/gateway_state.json`, two fields only). |
 
@@ -194,8 +195,8 @@ steers from the record. The app's token view reads only the record.
   only sessions that came through ACP. So a session from before the log, and
   not on the record, does not show.
 - A read is a gateway client, as a turn is. If the read fails, the record shows.
-- A turn from Hermes that is not on the record has no times, no end state and
-  no usage. A recorded steer that a replay does not hold shows with its record
+- A turn from Hermes that is not on the record has no times and no end state. A
+  recorded steer that a replay does not hold shows with its record
   text, which starts with "Note:".
 - A session with no title shows as a short id, because the plugin API does not
   give channel names to this tab. Setup checks are not on the record.
@@ -208,7 +209,23 @@ steers from the record. The app's token view reads only the record.
   count. If the new total is already above the old one, that turn shows less
   than it used. The usage of a steer that Hermes ran as its own turn shows on
   the next turn.
-- The token view shows no cost: Hermes reports none over ACP.
+- The usage view also reads Hermes' session store, for the last 30 days:
+  sessions from before this plugin, and turns that reported no usage. Hermes
+  keeps one running total per session and no count per request. So the part of
+  a total that the record did not measure shows as one row, at the session's last
+  activity.
+- Hermes' export lists a session only after it ends. Until then the view shows
+  what the record measured. A session that opens again loses its extra row until
+  it ends again. A compressed chat whose first row is older than 30 days shows only
+  when the record has it, or when its first prompt in the window names the agent.
+- The grant reads only Hermes' source `local`. Hermes starts a subagent on the
+  platform `subagent`, so the view does not read that subagent's row.
+- A session with nothing on record shows Hermes' cost when Hermes knows one. Beside
+  recorded turns the app estimates the cost from the counts, because Hermes gives
+  no cost per turn over ACP.
+- A session of more than 20000 messages makes Hermes refuse the whole export
+  (`sessions.max_export_messages`). The view then shows the record and says that
+  Hermes' store could not be read.
 - The provider row asks you to start a gateway when none runs, but Hermes
   0.22.3 and newer can start one for a turn. If `HERMES_HOME` moves the Hermes
   folder, the row reads the gateway state as not known. Lists of models come
