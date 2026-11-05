@@ -146,10 +146,16 @@ steers from the record. The app's token view reads only the record.
   new session that is shown the thread again (`src/sessions.ts`). A message
   that reaches an open session in the moment the process stops fails, and
   the app shows the error.
-- Each session gets the Buzz tools and also the MCP servers from your Hermes
-  config. The Hermes gateway attaches those servers, not the plugin. Since
-  Hermes 0.22.1, `HERMES_ACP_SKIP_CONFIGURED_MCP` has no effect. To keep your
-  servers out of ACP sessions, set this in the `config.yaml` of the Hermes
+- Each session lists the tools of the MCP servers in your Hermes config, but
+  it cannot run them. The Hermes gateway adds those tools to the `tool_search`
+  catalog, not the plugin. The model can read their names, descriptions, and
+  schemas. A call returns `MCP server '<name>' is not connected`, because a
+  session with editor MCP servers uses its own connection scope, and a Buzz
+  session always has one. Only the Buzz tools run. We measured this on Hermes
+  0.22.1 with stdio and HTTP servers. The plugin cannot remove those tools from
+  one session: since Hermes 0.22.1, `HERMES_ACP_SKIP_CONFIGURED_MCP` has no
+  effect, and Hermes ignores extra `session/new` fields. To remove your servers
+  from the catalog of ACP sessions, set this in the `config.yaml` of the Hermes
   profile that the plugin uses:
 
   ```yaml
@@ -161,7 +167,9 @@ steers from the record. The app's token view reads only the record.
 
   To allow only some servers, put their names in the list in place of
   `no_mcp`. This setting applies to all ACP sessions of that profile, not
-  only to Buzz. Restart the gateway after the change. Then do the smoke run,
+  only to Buzz. ACP sessions without editor MCP servers can run your tools, so
+  they lose those tools too. The gateway still starts your servers when it
+  boots. Restart the gateway after the change. Then do the smoke run,
   which proves that Hermes still reaches the Buzz tools. The plugin never
   changes your Hermes config.
 - Hermes 0.22.1 does not advertise HTTP MCP in its ACP `initialize` answer,
