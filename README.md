@@ -215,9 +215,9 @@ steers from the record. The app's token view reads only the record.
   from a session, and that session can make Hermes start a gateway, so the
   check opens one only when a gateway already runs. The New agent dialog and
   the Settings tab do not have this guard.
-- An agent cannot set a static WebP picture that needs a pixel change. The app
-  does that work in a web worker, and an installed plugin is one file. The tool
-  tells the agent to use a PNG or JPEG. PNG, JPEG and GIF work.
+- A static WebP picture with a color profile or a rotation uploads as a PNG
+  with the same pixels, not as a WebP. The app encodes WebP in a web worker,
+  and an installed plugin is one file. Other pictures keep their format.
 - The Settings tab does not warn about unsaved changes when you leave it.
   The plugin API does not give that part of the app to plugins.
 
