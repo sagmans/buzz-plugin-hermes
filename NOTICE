@@ -19,6 +19,9 @@ and mdast libraries they use (MIT License; @ungap/structured-clone: ISC). They
 keep their own copyright and license notices in their packages. This repository
 lists no dependency of its own.
 
+plugin/icon.png is buzz-app's Hermes mark (src/shared/design-system/icons/hermes.png),
+scaled up. It is Nous Research's, MIT-licensed, as buzz-app's NOTICE.md says.
+
 These files repeat or adapt buzz-app code; each marks it in a comment:
 
 - src/hermes.ts: the process adapter shape of src/bundled/goose/goose.ts,

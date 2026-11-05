@@ -6,6 +6,7 @@
 // Goose type runs on it (turns, session controls, synced settings, resume),
 // bundled unchanged; the build swaps its process adapter for `./hermes`
 // (scripts/build-plugin.mjs).
+import { showSettingsIcon } from "./settings-icon";
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent, AgentType } from "@app/features/agents/service";
 import {
@@ -60,6 +61,7 @@ export function apply(ctx: Context) {
   const { agents, host, react } = ctx;
   // First: the bundled app components render with Buzz's React only.
   bindReact(react);
+  ctx.effect(showSettingsIcon);
   // Only the desktop app can start `hermes acp`, serve MCP to it and read the
   // files its tools attach; no unusable type elsewhere.
   if (!host.spawn || !host.resolveDirectory || !host.readFile || !host.serveMcp)

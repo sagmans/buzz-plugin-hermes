@@ -110,6 +110,10 @@ steers from the record. The app's token view reads only the record.
 
 ## Limits
 
+- Buzz draws icons only for its bundled plugins, so this plugin adds its own to
+  its row and details panel in Settings, by editing that page. The build checks
+  the page at the pinned app revision. If a newer app changes the page, the app's
+  generic icon comes back; nothing else breaks.
 - Hermes runs tools without approval. The shared ACP client answers each
   permission request with "allow", as it does for Goose. Give the agent a
   workspace you trust it with.

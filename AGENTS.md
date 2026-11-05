@@ -23,6 +23,7 @@ true when you change behavior.
 | `src/session-read.ts`, `src/transcript.ts` | Shared copies: the session log, the short-lived `session/load` read with its limits, and a replay's turns with the record's times and steers. Keep their code the same as the other ACP plugin's, except import paths and formatting. |
 | `src/activity.tsx` | The Activity tab, from the app's own components: the read first, the record for the running session and as the fallback. |
 | `src/provider.tsx` | The app's provider row and dialog: what a setup check found. It shows; it never writes Hermes' setup or starts a gateway. |
+| `src/settings-icon.ts`, `plugin/icon.png` | The plugin's icon in Settings, which the app does not draw for an external plugin. |
 | `src/views.tsx` | Create and Settings views, from buzz-app's own components. |
 | `src/react-host.ts` | Every `react` import in the bundle: forwards to the app's React. |
 | `src/save-footer.tsx` | Puts the Settings Save action in the panel's sticky footer. |
