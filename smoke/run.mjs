@@ -1492,16 +1492,20 @@ function storedRow(id, opening, fields = {}) {
   };
 }
 
-/** What Hermes' store adds to the record: sessions the record never saw, the part
- * of a total it did not measure, and only for the agent they belong to. */
-async function checkStoreUsage(stub, loaded) {
-  const { type, agent } = loaded;
-  const read = (since = 0) =>
+/** A usage read of the agent's, as the app makes it: one place builds it so
+ * each store check reads the same way. */
+const storeReader =
+  ({ type, agent }) =>
+  (since = 0) =>
     type.usage(agent, { since, signal: new AbortController().signal });
-  const opening = (key) =>
-    `The system prompt.\n<context>\nAgent: ${key}\nChannel: store (#store)\n</context>\nA message.`;
-  const ours = opening(agent.key);
 
+/** A stored session's first message as the app writes it, naming its agent. */
+const storeOpening = (key) =>
+  `The system prompt.\n<context>\nAgent: ${key}\nChannel: store (#store)\n</context>\nA message.`;
+
+/** A failed store read shows as a gap on the record's own session, not as a
+ * lost session. Returns that session's id for the checks that follow. */
+async function checkStoreFailure(stub, loaded, read) {
   stub.storeAnswer = "Error: a session is too large\n";
   const refused = await read().catch((error) => error);
   if (refused?.name !== "HermesUsageError")
@@ -1514,9 +1518,12 @@ async function checkStoreUsage(stub, loaded) {
   const partial = (await read()).find((item) => item.id === recorded);
   if (partial?.gaps.length !== 1 || partial.observations.length !== 1)
     throw new SmokeError(`a failed read: ${JSON.stringify(partial)}`);
+  return recorded;
+}
 
-  stub.storeAnswer = undefined;
-  stub.store = [
+/** The store's rows, one per case the read must tell apart. */
+function storeFixture(recorded, ours) {
+  return [
     // The turn's own row names no agent: its record proves whose it is.
     storedRow(recorded, "A prompt with no context.", {
       cost_status: "estimated",
@@ -1535,9 +1542,14 @@ async function checkStoreUsage(stub, loaded) {
       started_at: STORE_STARTED_S + 2,
       last_activity_at: STORE_STARTED_S + 3,
     }),
-    storedRow("other", opening("someone-else")),
+    storedRow("other", storeOpening("someone-else")),
     storedRow("owner", "A prompt in the owner's terminal."),
   ];
+}
+
+/** Reads the store three ways at once and checks it is exported once, that no
+ * message words leave it, and that other agents' sessions stay unlisted. */
+async function checkStoreListing(stub, read) {
   const before = stub.exports;
   const [sessions] = await Promise.all([read(), read()]);
   await read();
@@ -1545,10 +1557,14 @@ async function checkStoreUsage(stub, loaded) {
     throw new SmokeError(`exports for 3 reads: ${stub.exports - before}`);
   if (JSON.stringify(sessions).includes(STORE_PRIVATE))
     throw new SmokeError("the read kept a message's words");
-  const found = (id) => sessions.find((item) => item.id === id);
   for (const id of ["idle", "chain-tip", "other", "owner"])
-    if (found(id)) throw new SmokeError(`session ${id} is listed`);
+    if (sessions.find((item) => item.id === id))
+      throw new SmokeError(`session ${id} is listed`);
+  return sessions;
+}
 
+/** The record's turn and the store's rest of its total show as two readings. */
+function checkStoreMerge(found, recorded) {
   const both = found(recorded);
   const [turn, rest] = both?.observations ?? [];
   if (
@@ -1562,7 +1578,11 @@ async function checkStoreUsage(stub, loaded) {
     "cost" in rest
   )
     throw new SmokeError(`record and store: ${JSON.stringify(both)}`);
+}
 
+/** Sessions the record never saw: priced only when Hermes priced them, and a
+ * compression chain counted as its parts. */
+function checkStoreUnrecorded(found) {
   const [old] = found("old")?.observations ?? [];
   if (old?.cost?.usd !== 2 || old.at !== (STORE_STARTED_S + 1) * 1000)
     throw new SmokeError(`an older session: ${JSON.stringify(found("old"))}`);
@@ -1570,13 +1590,33 @@ async function checkStoreUsage(stub, loaded) {
     throw new SmokeError("a cost Hermes does not know");
   if (found("chain")?.observations.length !== 2)
     throw new SmokeError(`a chain: ${JSON.stringify(found("chain"))}`);
+}
 
+/** A later `since` drops older sessions, and an unchanged session keeps its
+ * revision so the app does not re-read it. */
+async function checkStoreSince(read, found) {
   const later = (await read((STORE_STARTED_S + 2) * 1000)).map(({ id }) => id);
   if (later.includes("old") || !later.includes("chain"))
     throw new SmokeError(`since: ${later}`);
   const revision = (await read()).find(({ id }) => id === "old")?.revision;
   if (revision !== found("old").revision)
     throw new SmokeError("the revision changed with no new usage");
+}
+
+/** What Hermes' store adds to the record: sessions the record never saw, the part
+ * of a total it did not measure, and only for the agent they belong to. */
+async function checkStoreUsage(stub, loaded) {
+  const read = storeReader(loaded);
+  const ours = storeOpening(loaded.agent.key);
+  const recorded = await checkStoreFailure(stub, loaded, read);
+
+  stub.storeAnswer = undefined;
+  stub.store = storeFixture(recorded, ours);
+  const sessions = await checkStoreListing(stub, read);
+  const found = (id) => sessions.find((item) => item.id === id);
+  checkStoreMerge(found, recorded);
+  checkStoreUnrecorded(found);
+  await checkStoreSince(read, found);
   log("store-usage", `${sessions.length} sessions, ${stub.exports} exports`);
 }
 
@@ -1871,6 +1911,134 @@ async function stubChecks(options, manifest, app) {
   await checkStubProvider(options, manifest, app);
 }
 
+/** The plugin's host context over recording stand-ins, and the handles the
+ * checks read back. One builder keeps `main` to the run's order of steps. */
+function smokeSession(manifest, plugin) {
+  const session = {
+    children: new Set(),
+    methods: [],
+    prompts: [],
+    listeners: new Set(),
+    servers: new Set(),
+    cleanups: [],
+    workspace: mkdtempSync(join(tmpdir(), "hermes-smoke-")),
+    published: [],
+    types: [],
+    stdout: [],
+    liveStorage: memoryStore(),
+  };
+  session.agent = {
+    key: undefined,
+    type: `${manifest.id}/${plugin.TYPE_ID}`,
+    name: AGENT_NAME,
+    config: { workspace: session.workspace },
+  };
+  session.handle = recordingHandle(session.published);
+  session.agent.key = session.handle.key;
+  return session;
+}
+
+/** The app's host services as the plugin calls them, backed by the session. */
+function sessionContext(options, manifest, app, session) {
+  const { agent, listeners } = session;
+  return {
+    pluginOwner: { id: manifest.id },
+    react: app.react,
+    effect: (setup) => session.cleanups.push(setup()),
+    host: {
+      spawn: processHost(
+        manifest,
+        session.children,
+        session.methods,
+        session.stdout,
+        session.prompts,
+        options.route ? routeGuard(options.model) : undefined,
+      ),
+      serveMcp: mcpHost(session.servers),
+      resolveDirectory: async (path) => {
+        const dir = expand(path);
+        mkdirSync(dir, { recursive: true });
+        return dir;
+      },
+      readFile: async (path, { cwd } = {}) =>
+        new Uint8Array(
+          readFileSync(expand(path, cwd ? expand(cwd) : homedir())),
+        ),
+    },
+    agents: {
+      register: (type) => session.types.push(type),
+      relay: () => undefined,
+      core: async () => undefined,
+      tools: () => [],
+      storage: session.liveStorage,
+      snapshot: () => ({ status: "ready", running: [agent] }),
+      subscribe: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+  };
+}
+
+/** Releases what a run opened, on every path, so a failed check leaves no
+ * Hermes process or temp directory behind. */
+async function releaseSession(session) {
+  for (const cleanup of session.cleanups)
+    if (typeof cleanup === "function") cleanup();
+  await Promise.all([...session.servers].map((server) => server.close()));
+  await Promise.all(
+    [...session.children].map((child) =>
+      stop(child, new Promise((done) => child.on("exit", done))),
+    ),
+  );
+  rmSync(session.workspace, { recursive: true, force: true });
+}
+
+/** The live checks that need a real turn, run only when the options ask. */
+async function checkLiveTurn(options, manifest, session, type, discovery) {
+  const { agent, handle, published, prompts, stdout } = session;
+  const listed = options.route ?? options.model;
+  if (listed && !discovery.models.some((entry) => entry.id === listed))
+    throw new SmokeError(`Hermes does not list the model ${listed}`);
+  if (options.effort) checkEffort(options.model, options.effort);
+  if (options.route)
+    await checkRoute(
+      manifest.host.processes.find((entry) => entry.id === HERMES_PROCESS),
+      options.model,
+      options.route,
+    );
+  const model = options.model ?? discovery.current ?? discovery.models[0].id;
+  // A model is an agent setting, which the app hands the runtime as a
+  // changed agent, as when the owner saves it.
+  // One session per channel: this run's messages name no thread.
+  agent.config = { ...agent.config, model, scope: "channel" };
+  for (const listener of session.listeners) listener();
+  const sent = await turn(type, agent, handle, published);
+  log(
+    "turn",
+    `model ${model}: Hermes sent kind ${sent.kind}: ${JSON.stringify(sent.content)}`,
+  );
+  // A message's work ends once the agent has answered it in Buzz, which comes
+  // before Hermes ends the turn and gives its counters.
+  await until(
+    "the turn to end",
+    () =>
+      type.sessionControls.state(agent, { channelId: sent.channel }) === "idle",
+  );
+  const sessionId = checkLiveActivity(type, agent, session.liveStorage, sent);
+  await checkLiveRead({ type, agent }, sent.channel, sent.nonce);
+  await checkLiveUsage(
+    type,
+    agent,
+    sessionId,
+    model,
+    stdout,
+    Boolean(options.route),
+  );
+  if (options.controls)
+    await controls(type, agent, handle, { published, prompts, stdout });
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const manifest = JSON.parse(
@@ -1890,62 +2058,9 @@ async function main() {
   const plugin = await import(
     pathToFileURL(join(options.plugin, "plugin.js")).href
   );
-  const children = new Set();
-  const methods = [];
-  const prompts = [];
-  const listeners = new Set();
-  const servers = new Set();
-  const cleanups = [];
-  const workspace = mkdtempSync(join(tmpdir(), "hermes-smoke-"));
-  const published = [];
-  const types = [];
-  const stdout = [];
-  const agent = {
-    key: undefined,
-    type: `${manifest.id}/${plugin.TYPE_ID}`,
-    name: AGENT_NAME,
-    config: { workspace },
-  };
-  const handle = recordingHandle(published);
-  agent.key = handle.key;
-  const liveStorage = memoryStore();
-  const ctx = {
-    pluginOwner: { id: manifest.id },
-    react: app.react,
-    effect: (setup) => cleanups.push(setup()),
-    host: {
-      spawn: processHost(
-        manifest,
-        children,
-        methods,
-        stdout,
-        prompts,
-        options.route ? routeGuard(options.model) : undefined,
-      ),
-      serveMcp: mcpHost(servers),
-      resolveDirectory: async (path) => {
-        const dir = expand(path);
-        mkdirSync(dir, { recursive: true });
-        return dir;
-      },
-      readFile: async (path, { cwd } = {}) =>
-        new Uint8Array(
-          readFileSync(expand(path, cwd ? expand(cwd) : homedir())),
-        ),
-    },
-    agents: {
-      register: (type) => types.push(type),
-      relay: () => undefined,
-      core: async () => undefined,
-      tools: () => [],
-      storage: liveStorage,
-      snapshot: () => ({ status: "ready", running: [agent] }),
-      subscribe: (listener) => {
-        listeners.add(listener);
-        return () => listeners.delete(listener);
-      },
-    },
-  };
+  const session = smokeSession(manifest, plugin);
+  const ctx = sessionContext(options, manifest, app, session);
+  const { agent, types, stdout } = session;
   try {
     plugin.apply(ctx);
     const [type] = types;
@@ -1964,62 +2079,10 @@ async function main() {
     await checkNativeParity(type, agent, discovery);
     await checkLiveProvider(app, type);
     if (!options.turn) return;
-    const listed = options.route ?? options.model;
-    if (listed && !discovery.models.some((entry) => entry.id === listed))
-      throw new SmokeError(`Hermes does not list the model ${listed}`);
-    if (options.effort) checkEffort(options.model, options.effort);
-    if (options.route)
-      await checkRoute(
-        manifest.host.processes.find((entry) => entry.id === HERMES_PROCESS),
-        options.model,
-        options.route,
-      );
-    const model = options.model ?? discovery.current ?? discovery.models[0].id;
-    // A model is an agent setting, which the app hands the runtime as a
-    // changed agent, as when the owner saves it.
-    // One session per channel: this run's messages name no thread.
-    agent.config = { ...agent.config, model, scope: "channel" };
-    for (const listener of listeners) listener();
-    const sent = await turn(type, agent, handle, published);
-    log(
-      "turn",
-      `model ${model}: Hermes sent kind ${sent.kind}: ${JSON.stringify(sent.content)}`,
-    );
-    // A message's work ends once the agent has answered it in Buzz, which comes
-    // before Hermes ends the turn and gives its counters.
-    await until(
-      "the turn to end",
-      () =>
-        type.sessionControls.state(agent, { channelId: sent.channel }) ===
-        "idle",
-    );
-    const sessionId = checkLiveActivity(type, agent, liveStorage, sent);
-    await checkLiveRead({ type, agent }, sent.channel, sent.nonce);
-    await checkLiveUsage(
-      type,
-      agent,
-      sessionId,
-      model,
-      stdout,
-      Boolean(options.route),
-    );
-    if (options.controls)
-      await controls(type, agent, handle, {
-        published,
-        prompts,
-        stdout,
-      });
-    log("acp", [...new Set(methods)].join(", "));
+    await checkLiveTurn(options, manifest, session, type, discovery);
+    log("acp", [...new Set(session.methods)].join(", "));
   } finally {
-    for (const cleanup of cleanups)
-      if (typeof cleanup === "function") cleanup();
-    await Promise.all([...servers].map((server) => server.close()));
-    await Promise.all(
-      [...children].map((child) =>
-        stop(child, new Promise((done) => child.on("exit", done))),
-      ),
-    );
-    rmSync(workspace, { recursive: true, force: true });
+    await releaseSession(session);
   }
 }
 

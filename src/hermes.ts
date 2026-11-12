@@ -546,15 +546,9 @@ export class HermesWire {
   private answered(message: Message, line: string): string[] {
     const { id, error } = message;
     if (typeof id !== "number") return [line];
-    const version = record(record(message.result)?.agentInfo)?.version;
-    if (typeof version === "string" && VERSION_SHAPE.test(version))
-      this.version = version;
+    this.noteVersion(message);
     this.inFlight.delete(id);
-    if (this.opening.delete(id)) {
-      const details = record(record(error)?.data)?.details;
-      if (typeof details === "string") this.openError = details;
-      line = this.openedSession(message, line);
-    }
+    if (this.opening.delete(id)) line = this.openAnswered(message, line);
     if (this.switching.has(id)) return [...this.switched(id, !!error), line];
     const prompt = this.prompts.get(id);
     if (!prompt) return [line];
@@ -564,17 +558,57 @@ export class HermesWire {
       this.steering.delete(sessionId);
       return [line];
     }
-    if (prompt.kind === "compress") {
-      const written = this.compressing.get(sessionId) ?? "";
-      this.compressing.delete(sessionId);
-      // The next turn counts from zero, and could still end above the old total.
-      if (!error && compressedAnew(written))
-        this.totals.set(sessionId, NOTHING_USED);
-      // An error answer reaches the client as an error by itself.
-      return error
-        ? [line]
-        : [textLine(sessionId, compactResult(written)), line];
-    }
+    if (prompt.kind === "compress")
+      return this.compressAnswered(sessionId, !!error, line);
+    return this.turnAnswered(message, line, sessionId, id);
+  }
+
+  /** Remembers the agent version an initialize answer reports, but only a
+   * well-formed one: it later reaches the app's UI. */
+  private noteVersion(message: Message) {
+    const version = record(record(message.result)?.agentInfo)?.version;
+    if (typeof version === "string" && VERSION_SHAPE.test(version))
+      this.version = version;
+  }
+
+  /** Keeps the reason a session open failed, so the app can show it, and
+   * rewrites the answer as the open's own. */
+  private openAnswered(message: Message, line: string): string {
+    const details = record(record(message.error)?.data)?.details;
+    if (typeof details === "string") this.openError = details;
+    return this.openedSession(message, line);
+  }
+
+  /**
+   * A compress answer carries no usage of its own, so the client would keep a
+   * stale total and never see what was compacted without this step.
+   */
+  private compressAnswered(
+    sessionId: string,
+    failed: boolean,
+    line: string,
+  ): string[] {
+    const written = this.compressing.get(sessionId) ?? "";
+    this.compressing.delete(sessionId);
+    // The next turn counts from zero, and could still end above the old total.
+    if (!failed && compressedAnew(written))
+      this.totals.set(sessionId, NOTHING_USED);
+    // An error answer reaches the client as an error by itself.
+    return failed
+      ? [line]
+      : [textLine(sessionId, compactResult(written)), line];
+  }
+
+  /**
+   * The client shows usage and a steerable run from these lines, so a finished
+   * turn must report its usage and close its run before anything else reads it.
+   */
+  private turnAnswered(
+    message: Message,
+    line: string,
+    sessionId: string,
+    id: number,
+  ): string[] {
     line = this.turnUsage(message, line, sessionId);
     const turn = this.turns.get(sessionId);
     if (!turn || turn.id !== id) return [line];

@@ -118,13 +118,18 @@ class Turns {
     return `${this.sessionId}:${this.count}`;
   }
 
+  /** A thread root only means something inside a channel; a DM turn has none.
+   * Kept as a guard clause so the turn builder stays a plain literal. */
+  private threadRoot() {
+    if (!this.place.channelId) return undefined;
+    return this.place.root ?? null;
+  }
+
   private turn(partial: boolean) {
     const next: TranscriptTurn = {
       turnId: this.id(),
       channelId: this.place.channelId || null,
-      threadRootId: this.place.channelId
-        ? (this.place.root ?? null)
-        : undefined,
+      threadRootId: this.threadRoot(),
       triggeringEventIds: [],
       sessionId: this.sessionId,
       newSession: false,
