@@ -118,8 +118,9 @@ class Turns {
     return `${this.sessionId}:${this.count}`;
   }
 
-  /** A thread root only means something inside a channel; a DM turn has none.
-   * Kept as a guard clause so the turn builder stays a plain literal. */
+  /** The turn's thread link in the three-way form the record needs: undefined
+   * when there is no channel (a DM turn has no thread to link), null for a
+   * top-level channel message, the root id for a reply. */
   private threadRoot() {
     if (!this.place.channelId) return undefined;
     return this.place.root ?? null;

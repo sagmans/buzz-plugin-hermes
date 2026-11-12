@@ -1492,13 +1492,6 @@ function storedRow(id, opening, fields = {}) {
   };
 }
 
-/** A usage read of the agent's, as the app makes it: one place builds it so
- * each store check reads the same way. */
-const storeReader =
-  ({ type, agent }) =>
-  (since = 0) =>
-    type.usage(agent, { since, signal: new AbortController().signal });
-
 /** A stored session's first message as the app writes it, naming its agent. */
 const storeOpening = (key) =>
   `The system prompt.\n<context>\nAgent: ${key}\nChannel: store (#store)\n</context>\nA message.`;
@@ -1606,7 +1599,13 @@ async function checkStoreSince(read, found) {
 /** What Hermes' store adds to the record: sessions the record never saw, the part
  * of a total it did not measure, and only for the agent they belong to. */
 async function checkStoreUsage(stub, loaded) {
-  const read = storeReader(loaded);
+  // One read shape for every store check, so each sees the agent's usage as
+  // the app asks for it.
+  const read = (since = 0) =>
+    loaded.type.usage(loaded.agent, {
+      since,
+      signal: new AbortController().signal,
+    });
   const ours = storeOpening(loaded.agent.key);
   const recorded = await checkStoreFailure(stub, loaded, read);
 
