@@ -2026,11 +2026,13 @@ async function checkLiveTurn(options, manifest, session, type, discovery) {
   );
   const sessionId = checkLiveActivity(type, agent, session.liveStorage, sent);
   await checkLiveRead({ type, agent }, sent.channel, sent.nonce);
+  // A pinned route is the id Hermes' ACP reports for the turn's model, as the
+  // picker lists it, so the record names the route, not the bare model.
   await checkLiveUsage(
     type,
     agent,
     sessionId,
-    model,
+    options.route ?? model,
     stdout,
     Boolean(options.route),
   );

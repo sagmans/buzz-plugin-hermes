@@ -8,7 +8,7 @@
 // a React context that a plugin cannot reach, so here it replaces the tab's
 // content and has a back button, as the app's subview does in a panel without
 // tabs. Rendered under the list, it would leave the list above a long transcript.
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import activityStyles from "@app/features/agents/ActivityLayout.module.css";
 import { ActivityTranscript } from "@app/features/agents/ActivityTranscript";
 import {
@@ -85,11 +85,16 @@ export function createActivity({
       loading: boolean;
       error?: string;
     }>({ reads: NO_READS, loading: true });
+    const fromRef = useRef(from);
+    fromRef.current = from;
     const ids = from.map((session) => session.sessionId).join();
     useEffect(() => {
+      // Re-read when session ids or refresh round change, not on array identity.
+      void ids;
+      void round;
       const abort = new AbortController();
       setState((prior) => ({ reads: prior.reads, loading: true }));
-      sessions.read(from, working, abort.signal).then(
+      sessions.read(fromRef.current, working, abort.signal).then(
         (reads) => {
           if (!abort.signal.aborted) setState({ reads, loading: false });
         },
@@ -185,12 +190,16 @@ export function createActivity({
     round: number,
     found: () => void,
   ) => {
+    const foundRef = useRef(found);
+    foundRef.current = found;
     const workspace = config(agent.config).workspace;
     useEffect(() => {
+      // Re-run discovery on Refresh without re-firing on a new callback closure.
+      void round;
       const abort = new AbortController();
       sessions.discover(agent.key, workspace, abort.signal).then(
         (any) => {
-          if (any && !abort.signal.aborted) found();
+          if (any && !abort.signal.aborted) foundRef.current();
         },
         (error: unknown) => {
           if (!abort.signal.aborted)

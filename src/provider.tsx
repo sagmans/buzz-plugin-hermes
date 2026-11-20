@@ -31,6 +31,26 @@ const defaultName = (status: HermesStatus | undefined) =>
   status?.defaultModel ||
   DEFAULT_MODEL_LABEL;
 
+/** What to do about the gateway, for the states that need something. */
+function GatewayHelp({ gateway }: { gateway: GatewayState }) {
+  if (gateway === "stopped")
+    return (
+      <p className="m-0 text-body-sm">
+        Hermes agents work through the Hermes gateway. Start it with{" "}
+        <code>hermes gateway start</code>. This check does not start it.
+      </p>
+    );
+  if (gateway === "unknown")
+    return (
+      <p className="m-0 text-body-sm">
+        Buzz cannot read the state of the gateway, for example when Hermes keeps
+        its home in a custom folder. To check it, run{" "}
+        <code>hermes gateway status</code>.
+      </p>
+    );
+  return null;
+}
+
 export function createProvider(setup: HermesSetup): AgentProvider {
   /** Follows the check's state, so a new finding shows at once. */
   const useCheck = () =>
@@ -44,26 +64,6 @@ export function createProvider(setup: HermesSetup): AgentProvider {
         {defaultName(setup.status())}
       </Button>
     );
-  }
-
-  /** What to do about the gateway, for the states that need something. */
-  function GatewayHelp({ gateway }: { gateway: GatewayState }) {
-    if (gateway === "stopped")
-      return (
-        <p className="m-0 text-body-sm">
-          Hermes agents work through the Hermes gateway. Start it with{" "}
-          <code>hermes gateway start</code>. This check does not start it.
-        </p>
-      );
-    if (gateway === "unknown")
-      return (
-        <p className="m-0 text-body-sm">
-          Buzz cannot read the gateway's state, for example when Hermes keeps its
-          home in a custom folder. To check it, run{" "}
-          <code>hermes gateway status</code>.
-        </p>
-      );
-    return null;
   }
 
   function DialogBody({ onClose }: { onClose(): void }) {

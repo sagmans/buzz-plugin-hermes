@@ -278,11 +278,11 @@ React itself comes from the app at run time (`src/react-host.ts`).
 ## Checks
 
 Run `scripts/setup-hooks` once after you clone. Install the tools in
-`mise.toml` (`mise install`), plus `gitleaks`, `shellcheck`, `lizard`,
-`semgrep` and `trivy`.
+`mise.toml` (`mise install`), plus `gitleaks`, `shellcheck`, `semgrep`, `trivy`
+and `osv-scanner`.
 
-- `scripts/check --quick`: syntax, manifest grant, shell lint, private-data
-  guard. The pre-commit hook runs it.
+- `scripts/check --quick`: syntax, manifest grant, format and lint (Biome),
+  shell lint, private-data guard. The pre-commit hook runs it.
 - `scripts/check`: all of the above, then Markdown lint, complexity,
   semgrep, trivy, the build and the smoke run. The pre-push hook runs it on
   each pushed commit.
